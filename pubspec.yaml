@@ -1,0 +1,34 @@
+name: talk_translate
+description: "Complete Online & Offline Translator for Web, iOS, and Android"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  fixnum: ^1.1.1
+  cupertino_icons: ^1.0.8
+  http: ^1.2.0
+  shared_preferences: ^2.2.3
+  speech_to_text: ^7.0.0
+  flutter_tts: ^4.2.0
+  translator: ^1.0.3
+  share_plus: ^10.1.2
+  google_mlkit_translation: any
+  google_mlkit_text_recognition: any
+  image_picker: any
+  sherpa_onnx: ^1.13.8
+  record: ^7.1.2
+  path_provider: ^2.1.2
+  flutter_edge_tts: ^0.0.2
+  audioplayers: ^6.8.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
