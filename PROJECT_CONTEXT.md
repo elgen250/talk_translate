@@ -79,7 +79,8 @@ talk_translate/
 │   │   └── translation_service.dart         # Master translation gateway (Cloud, ML Kit, Offline Dict, OCR, STT/TTS)
 │   ├── features/
 │   │   ├── camera_translate/
-│   │   │   └── camera_translate_view.dart   # Camera live capture, OCR bounding-box image overlay, export/share
+│   │   │   ├── camera_solutions_compare_view.dart # Multi-solution OCR lab (Smart Lens, Interactive Sheet, Reader List, Raw Baseline)
+│   │   │   └── camera_translate_view.dart   # Shell wrapper forwarding to CameraSolutionsCompareView
 │   │   ├── extras/
 │   │   │   └── extras_view.dart             # Secondary hub: Learn, Keyboard Translator, Offline Mode, History
 │   │   ├── history/
@@ -283,19 +284,27 @@ talk_translate/
 
 ---
 
-### `lib/features/camera_translate/camera_translate_view.dart`
-- **Role:** Professional Google Lens-style visual translation engine with line-level OCR, aspect-ratio bounding box projection, auto-fitted text overlays, interactive zoom, and composited image sharing.
-- **Classes / Widgets:**
-  - `TranslatedLineItem`: Data holder storing `originalText` (String), `translatedText` (String), and `boundingBox` (Rect).
-  - `CameraTranslateView` (`StatefulWidget`):
-    - Photo capture via camera/gallery, line-level OCR text extraction via Google ML Kit `TextRecognizer`, image dimension decoding via `ui.decodeImageFromList`, aspect-ratio coordinate scaling (`BoxFit.contain`), interactive pinch-to-zoom (`InteractiveViewer`), tap-to-speak voice playback, original-vs-overlay press-to-toggle view, and 3.0x pixel ratio composited image export via `RepaintBoundary` + `share_plus`.
-- **Key Methods:**
-  - `Future<void> _pickAndProcessImage(bool useCamera)`: Picks image, decodes natural pixel dimensions, iterates over `TextBlock.lines`, filters out numeric/date noise, and executes line translations.
-  - `Future<ui.Image> _decodeImage(Uint8List bytes)`: Asynchronously resolves natural image dimensions (`ui.decodeImageFromList`) to prevent aspect-ratio and orientation displacement.
-  - `bool _isPureNumberOrDate(String text)`: RegEx filter ignoring pure phone numbers, dates, and noise strings.
-  - `Widget _buildImageWithOverlays()`: `LayoutBuilder` calculating exact `scale` and centering offsets (`offsetX`, `offsetY`) to align overlays precisely onto original image text.
-  - `Future<void> _saveAndShareTranslatedImage()`: Captures rendered pixel buffer from `RepaintBoundary` and launches native share sheet.
+### `lib/features/camera_translate/camera_solutions_compare_view.dart`
+- **Role:** Interactive multi-solution OCR comparison lab implementing 3 production-grade solutions with live toggle buttons to eliminate viewfinder crowding, filter on-screen keyboard artifacts, and cluster text blocks.
+- **Classes / Enums / Models:**
+  - `CameraSolutionMode` (`enum`): `smartLens` (Solution 1: paragraph merging & noise filtering), `interactiveSheet` (Solution 2: glowing subtle focus outline with bottom sheet), `readerList` (Solution 3: structured document card list with TTS & clipboard export), `rawBaseline` (unfiltered baseline for side-by-side comparison).
+  - `OcrTranslatedItem`: Holds `id`, `originalText`, `translatedText`, `boundingBox`, and `isNoise` flag.
+  - `CameraSolutionsCompareView` (`StatefulWidget`): Complete testbed containing live mode switcher, parallel translation batching, `InteractiveViewer` zoom, and high-res image sharing.
+- **Key Methods & Logic:**
+  - `bool _isNoiseOrKeyboardArtifact(String text)`: Algorithmic noise filter discarding single isolated characters (except valid words), pure numbers/dates, and keyboard keys (`GIF`, `ESC`, `TAB`, `DF`, `HJ K`, etc.).
+  - `Future<void> _pickAndProcessImage(bool useCamera)`: Extracts raw lines alongside paragraph-merged smart blocks, translating in parallel batches of 10 items via `Future.wait`.
+  - `void _showDetailBottomSheet(BuildContext context, OcrTranslatedItem item)`: Elegant modal presenting original & translated text, speech synthesis, and clipboard copy.
+  - `Widget _buildSolutionsControlBar()`: Segmented button row providing instantaneous switching between the 3 solutions on the exact same photo.
 - **Dependencies:** `package:google_mlkit_text_recognition`, `package:image_picker`, `package:share_plus`, `package:path_provider`, `lib/data/translation_service.dart`, `lib/core/widgets/shared_top_bar.dart`, `lib/core/widgets/language_selector_row.dart`, `lib/core/theme/app_colors.dart`.
+- **Used By:** `camera_translate_view.dart`.
+
+---
+
+### `lib/features/camera_translate/camera_translate_view.dart`
+- **Role:** Top-level feature wrapper mounting `CameraSolutionsCompareView` into `MainNavigationScreen`.
+- **Classes / Widgets:**
+  - `CameraTranslateView` (`StatelessWidget`): Shell widget that instantiates `CameraSolutionsCompareView`.
+- **Dependencies:** `lib/features/camera_translate/camera_solutions_compare_view.dart`.
 - **Used By:** `main_navigation_screen.dart`.
 
 ---
@@ -406,9 +415,9 @@ talk_translate/
 ---
 
 ## 7. Latest Sync Changelog
-1. **2026-10-20:** Optimized camera OCR translation loop to execute in asynchronous parallel batches (`Future.wait`) of 10 lines, preventing UI thread stalls and network timeouts during large document scans.
-2. **2026-10-20:** Upgraded `camera_translate_view.dart` to a professional Google Lens-style OCR engine with line-level extraction (`TextLine`), aspect-ratio bounding box alignment via `ui.decodeImageFromList`, `InteractiveViewer` zoom, and tap-to-speak.
-3. **2026-10-20:** Created `PROJECT_CONTEXT.md` as the unified codebase source of truth and architectural index.
-4. **2026-10-20:** Implemented smooth manual and live auto-scrolling (`ScrollController` + `animateTo: maxScrollExtent`) across all speech and translation cards in `talk_translate_view.dart`.
-5. **2026-10-20:** Upgraded iOS deployment target to `15.5` in `Podfile`, `project.pbxproj`, and `AppFrameworkInfo.plist` to satisfy `google_mlkit_commons` requirements.
+1. **2026-10-20:** Created `camera_solutions_compare_view.dart` implementing all 3 OCR solutions (Smart Lens with paragraph merging & keyboard noise filtering, Interactive Focus & Bottom Sheet, and Document Reader List Mode) with independent toggle buttons for live real-device testing and comparison against raw baseline.
+2. **2026-10-20:** Optimized camera OCR translation loop to execute in asynchronous parallel batches (`Future.wait`) of 10 lines, preventing UI thread stalls and network timeouts during large document scans.
+3. **2026-10-20:** Upgraded `camera_translate_view.dart` to a professional Google Lens-style OCR engine with line-level extraction (`TextLine`), aspect-ratio bounding box alignment via `ui.decodeImageFromList`, `InteractiveViewer` zoom, and tap-to-speak.
+4. **2026-10-20:** Created `PROJECT_CONTEXT.md` as the unified codebase source of truth and architectural index.
+5. **2026-10-20:** Implemented smooth manual and live auto-scrolling (`ScrollController` + `animateTo: maxScrollExtent`) across all speech and translation cards in `talk_translate_view.dart`.
 
