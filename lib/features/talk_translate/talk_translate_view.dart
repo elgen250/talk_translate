@@ -54,6 +54,24 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
   String _speakerTwoAccumulatedSpokenText = '';
   Timer? _restartSttTimer;
 
+  // ScrollControllers for auto-scrolling long speech and translations
+  final ScrollController _spokenScrollController = ScrollController();
+  final ScrollController _translatedScrollController = ScrollController();
+  final ScrollController _speakerTwoSpokenScrollController = ScrollController();
+  final ScrollController _speakerTwoTranslatedScrollController = ScrollController();
+
+  void _scrollToBottom(ScrollController controller) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (controller.hasClients) {
+        controller.animateTo(
+          controller.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -72,6 +90,10 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
     try {
       TranslationService.instance.speech?.stop();
     } catch (_) {}
+    _spokenScrollController.dispose();
+    _translatedScrollController.dispose();
+    _speakerTwoSpokenScrollController.dispose();
+    _speakerTwoTranslatedScrollController.dispose();
     super.dispose();
   }
 
@@ -141,6 +163,9 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
           }
           _isTranslating = false;
         });
+        _scrollToBottom(fromSpeakerTwo
+            ? _speakerTwoTranslatedScrollController
+            : _translatedScrollController);
       } catch (e) {
         debugPrint('Live translation error: $e');
         if (mounted && currentRequestId == _liveTranslateRequestId) {
@@ -373,6 +398,9 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
                   _spokenText = fullText;
                 }
               });
+              _scrollToBottom(speakerTwo
+                  ? _speakerTwoSpokenScrollController
+                  : _spokenScrollController);
 
               if (fullText != _lastLiveTranslatedText) {
                 _liveTranslate(fullText,
@@ -757,19 +785,23 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
                         ],
                       ),
                       Expanded(
-                        child: Text(
-                          _spokenText.isEmpty
-                              ? (_isListening
-                                  ? (_isUsingLocalAi
-                                      ? '🎙️ الاستماع بالذكاء الاصطناعي المحلي (Local)... تحدث ثم انقر المايك للترجمة'
-                                      : 'Listening live... Speak now')
-                                  : 'Tap microphone to speak')
-                              : _spokenText,
-                          style: TextStyle(
-                            fontSize: 19,
-                            color: _spokenText.isEmpty
-                                ? AppColors.textHint
-                                : AppColors.textPrimary,
+                        child: SingleChildScrollView(
+                          controller: _spokenScrollController,
+                          physics: const BouncingScrollPhysics(),
+                          child: Text(
+                            _spokenText.isEmpty
+                                ? (_isListening
+                                    ? (_isUsingLocalAi
+                                        ? '🎙️ الاستماع بالذكاء الاصطناعي المحلي (Local)... تحدث ثم انقر المايك للترجمة'
+                                        : 'Listening live... Speak now')
+                                    : 'Tap microphone to speak')
+                                : _spokenText,
+                            style: TextStyle(
+                              fontSize: 19,
+                              color: _spokenText.isEmpty
+                                  ? AppColors.textHint
+                                  : AppColors.textPrimary,
+                            ),
                           ),
                         ),
                       ),
@@ -914,15 +946,19 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
                                   ),
                                 ],
                               )
-                            : Text(
-                                _translatedText.isEmpty
-                                    ? 'Translation will appear here'
-                                    : _translatedText,
-                                style: TextStyle(
-                                  fontSize: 19,
-                                  color: _translatedText.isEmpty
-                                      ? AppColors.textHint
-                                      : AppColors.textPrimary,
+                            : SingleChildScrollView(
+                                controller: _translatedScrollController,
+                                physics: const BouncingScrollPhysics(),
+                                child: Text(
+                                  _translatedText.isEmpty
+                                      ? 'Translation will appear here'
+                                      : _translatedText,
+                                  style: TextStyle(
+                                    fontSize: 19,
+                                    color: _translatedText.isEmpty
+                                        ? AppColors.textHint
+                                        : AppColors.textPrimary,
+                                  ),
                                 ),
                               ),
                       ),
@@ -1123,16 +1159,20 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
                       ),
                       const SizedBox(height: 10),
                       Expanded(
-                        child: Center(
-                          child: Text(
-                            _speakerTwoSpokenText.isNotEmpty
-                                ? _speakerTwoSpokenText
-                                : (_speakerTwoTranslatedText.isNotEmpty
-                                    ? _speakerTwoTranslatedText
-                                    : 'Tap mic and speak across table'),
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                                color: Colors.white, fontSize: 18),
+                        child: SingleChildScrollView(
+                          controller: _speakerTwoSpokenScrollController,
+                          physics: const BouncingScrollPhysics(),
+                          child: Center(
+                            child: Text(
+                              _speakerTwoSpokenText.isNotEmpty
+                                  ? _speakerTwoSpokenText
+                                  : (_speakerTwoTranslatedText.isNotEmpty
+                                      ? _speakerTwoTranslatedText
+                                      : 'Tap mic and speak across table'),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 18),
+                            ),
                           ),
                         ),
                       ),
@@ -1251,16 +1291,20 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
                     ),
                     const SizedBox(height: 10),
                     Expanded(
-                      child: Center(
-                        child: Text(
-                          _spokenText.isNotEmpty
-                              ? _spokenText
-                              : (_translatedText.isNotEmpty
-                                  ? _translatedText
-                                  : 'Tap mic and speak'),
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 18),
+                      child: SingleChildScrollView(
+                        controller: _spokenScrollController,
+                        physics: const BouncingScrollPhysics(),
+                        child: Center(
+                          child: Text(
+                            _spokenText.isNotEmpty
+                                ? _spokenText
+                                : (_translatedText.isNotEmpty
+                                    ? _translatedText
+                                    : 'Tap mic and speak'),
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 18),
+                          ),
                         ),
                       ),
                     ),
