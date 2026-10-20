@@ -406,9 +406,9 @@ talk_translate/
 ---
 
 ## 7. Latest Sync Changelog
-1. **2026-10-20:** Upgraded `camera_translate_view.dart` to a professional Google Lens-style OCR engine with line-level extraction (`TextLine`), aspect-ratio bounding box alignment via `ui.decodeImageFromList`, `InteractiveViewer` zoom, and tap-to-speak.
-2. **2026-10-20:** Created `PROJECT_CONTEXT.md` as the unified codebase source of truth and architectural index.
-3. **2026-10-20:** Implemented smooth manual and live auto-scrolling (`ScrollController` + `animateTo: maxScrollExtent`) across all speech and translation cards in `talk_translate_view.dart`.
-4. **2026-10-20:** Upgraded iOS deployment target to `15.5` in `Podfile`, `project.pbxproj`, and `AppFrameworkInfo.plist` to satisfy `google_mlkit_commons` requirements.
-5. **2026-10-20:** Added automated GitHub Actions macOS workflow (`.github/workflows/build_ios.yml`) to build iOS release IPA for physical iPhone deployment.
+1. **2026-10-20:** Optimized camera OCR translation loop to execute in asynchronous parallel batches (`Future.wait`) of 10 lines, preventing UI thread stalls and network timeouts during large document scans.
+2. **2026-10-20:** Upgraded `camera_translate_view.dart` to a professional Google Lens-style OCR engine with line-level extraction (`TextLine`), aspect-ratio bounding box alignment via `ui.decodeImageFromList`, `InteractiveViewer` zoom, and tap-to-speak.
+3. **2026-10-20:** Created `PROJECT_CONTEXT.md` as the unified codebase source of truth and architectural index.
+4. **2026-10-20:** Implemented smooth manual and live auto-scrolling (`ScrollController` + `animateTo: maxScrollExtent`) across all speech and translation cards in `talk_translate_view.dart`.
+5. **2026-10-20:** Upgraded iOS deployment target to `15.5` in `Podfile`, `project.pbxproj`, and `AppFrameworkInfo.plist` to satisfy `google_mlkit_commons` requirements.
 

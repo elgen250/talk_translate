@@ -114,30 +114,47 @@ class _CameraTranslateViewState extends State<CameraTranslateView> {
       
       try {
         final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
-        List<TranslatedLineItem> tempLines = [];
+        final List<({String text, Rect boundingBox})> candidateLines = [];
 
-        for (TextBlock block in recognizedText.blocks) {
-          for (TextLine line in block.lines) {
+        for (final block in recognizedText.blocks) {
+          for (final line in block.lines) {
             final text = line.text.trim();
-            // Filter out pure numbers, dates, or tiny noise to keep UI clean
             if (text.isEmpty || _isPureNumberOrDate(text)) continue;
-
-            // Translate each line individually or batch
-            final translated = await TranslationService.instance.translate(
-              text: text,
-              fromCode: _sourceLang.code,
-              toCode: _targetLang.code,
-              mode: 'camera',
-            );
-
-            tempLines.add(
-              TranslatedLineItem(
-                originalText: text,
-                translatedText: translated,
-                boundingBox: line.boundingBox,
-              ),
-            );
+            candidateLines.add((text: text, boundingBox: line.boundingBox));
           }
+        }
+
+        // Translate in parallel batches of up to 10 lines to ensure instant response without timeouts
+        final List<TranslatedLineItem> tempLines = [];
+        const batchSize = 10;
+        for (var i = 0; i < candidateLines.length; i += batchSize) {
+          final end = (i + batchSize < candidateLines.length) ? i + batchSize : candidateLines.length;
+          final batch = candidateLines.sublist(i, end);
+
+          final results = await Future.wait(
+            batch.map((item) async {
+              try {
+                final translated = await TranslationService.instance.translate(
+                  text: item.text,
+                  fromCode: _sourceLang.code,
+                  toCode: _targetLang.code,
+                  mode: 'camera',
+                );
+                return TranslatedLineItem(
+                  originalText: item.text,
+                  translatedText: translated.isNotEmpty ? translated : item.text,
+                  boundingBox: item.boundingBox,
+                );
+              } catch (_) {
+                return TranslatedLineItem(
+                  originalText: item.text,
+                  translatedText: item.text,
+                  boundingBox: item.boundingBox,
+                );
+              }
+            }),
+          );
+          tempLines.addAll(results);
         }
 
         if (!mounted) return;
