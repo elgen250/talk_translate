@@ -285,16 +285,15 @@ talk_translate/
 ---
 
 ### `lib/features/camera_translate/camera_solutions_compare_view.dart`
-- **Role:** Interactive multi-solution OCR comparison lab implementing 3 production-grade solutions with live toggle buttons to eliminate viewfinder crowding, filter on-screen keyboard artifacts, and cluster text blocks.
+- **Role:** Professional Google Lens-style AR text replacement engine and multi-solution comparison lab. Replaces recognized text directly in-place with exact same font size, exact coordinates, seamless surface background color sampling, and zero-shadow alignment.
 - **Classes / Enums / Models:**
-  - `CameraSolutionMode` (`enum`): `smartLens` (Solution 1: paragraph merging & noise filtering), `interactiveSheet` (Solution 2: glowing subtle focus outline with bottom sheet), `readerList` (Solution 3: structured document card list with TTS & clipboard export), `rawBaseline` (unfiltered baseline for side-by-side comparison).
-  - `OcrTranslatedItem`: Holds `id`, `originalText`, `translatedText`, `boundingBox`, and `isNoise` flag.
-  - `CameraSolutionsCompareView` (`StatefulWidget`): Complete testbed containing live mode switcher, parallel translation batching, `InteractiveViewer` zoom, and high-res image sharing.
+  - `CameraSolutionMode` (`enum`): `googleLensAR` (Default: 1:1 in-place line replacement with exact font size, line height scaling, and sampled background erasure), `interactiveSheet` (glowing cyan outline with detailed bottom sheet), `readerList` (clean document card list with TTS & clipboard export), `mergedParagraphs` (merged paragraph blocks).
+  - `OcrTranslatedItem`: Holds `id`, `originalText`, `translatedText`, `boundingBox`, `backgroundColor`, `textColor`, and `isNoise`.
+  - `CameraSolutionsCompareView` (`StatefulWidget`): Complete OCR camera view with live solution switcher, parallel translation batching, `InteractiveViewer` zoom, and high-res image sharing.
 - **Key Methods & Logic:**
-  - `bool _isNoiseOrKeyboardArtifact(String text)`: Algorithmic noise filter discarding single isolated characters (except valid words), pure numbers/dates, and keyboard keys (`GIF`, `ESC`, `TAB`, `DF`, `HJ K`, etc.).
-  - `Future<void> _pickAndProcessImage(bool useCamera)`: Extracts raw lines alongside paragraph-merged smart blocks, translating in parallel batches of 10 items via `Future.wait`.
-  - `void _showDetailBottomSheet(BuildContext context, OcrTranslatedItem item)`: Elegant modal presenting original & translated text, speech synthesis, and clipboard copy.
-  - `Widget _buildSolutionsControlBar()`: Segmented button row providing instantaneous switching between the 3 solutions on the exact same photo.
+  - `Color _sampleBackgroundColor(ui.Image, ByteData?, Rect)`: Samples 6 perimeter points around bounding box from raw RGBA buffer to resolve the exact paper/sign surface background color.
+  - `Color _getTextColorForBackground(Color)`: Evaluates WCAG relative luminance (`computeLuminance()`) to produce crisp black `#0F172A` on light backgrounds or pure white on dark surfaces.
+  - `Widget _buildGoogleLensOverlay(...)`: Positions in-place replacement container with 1px bleed over original text, rendered with `fontSize = height * 0.78` and `FittedBox.scaleDown` to match original text size precisely without distortion or floating card shadows.
 - **Dependencies:** `package:google_mlkit_text_recognition`, `package:image_picker`, `package:share_plus`, `package:path_provider`, `lib/data/translation_service.dart`, `lib/core/widgets/shared_top_bar.dart`, `lib/core/widgets/language_selector_row.dart`, `lib/core/theme/app_colors.dart`.
 - **Used By:** `camera_translate_view.dart`.
 
@@ -415,9 +414,9 @@ talk_translate/
 ---
 
 ## 7. Latest Sync Changelog
-1. **2026-10-20:** Created `camera_solutions_compare_view.dart` implementing all 3 OCR solutions (Smart Lens with paragraph merging & keyboard noise filtering, Interactive Focus & Bottom Sheet, and Document Reader List Mode) with independent toggle buttons for live real-device testing and comparison against raw baseline.
-2. **2026-10-20:** Optimized camera OCR translation loop to execute in asynchronous parallel batches (`Future.wait`) of 10 lines, preventing UI thread stalls and network timeouts during large document scans.
-3. **2026-10-20:** Upgraded `camera_translate_view.dart` to a professional Google Lens-style OCR engine with line-level extraction (`TextLine`), aspect-ratio bounding box alignment via `ui.decodeImageFromList`, `InteractiveViewer` zoom, and tap-to-speak.
-4. **2026-10-20:** Created `PROJECT_CONTEXT.md` as the unified codebase source of truth and architectural index.
-5. **2026-10-20:** Implemented smooth manual and live auto-scrolling (`ScrollController` + `animateTo: maxScrollExtent`) across all speech and translation cards in `talk_translate_view.dart`.
+1. **2026-10-20:** Implemented true Google Lens AR 1:1 in-place text replacement in `camera_solutions_compare_view.dart`: exact coordinate alignment over original text, pixel-level surface background color sampling to erase old text, font sizing directly proportional to line height (`height * 0.78`), and zero-shadow seamless surface blending.
+2. **2026-10-20:** Created `camera_solutions_compare_view.dart` implementing multi-solution OCR comparison (Google Lens AR, Interactive Focus & Bottom Sheet, Document Reader List, and Merged Paragraphs) with dedicated toggle buttons for live real-device testing.
+3. **2026-10-20:** Optimized camera OCR translation loop to execute in asynchronous parallel batches (`Future.wait`) of 10 lines, preventing UI thread stalls and network timeouts during large document scans.
+4. **2026-10-20:** Upgraded `camera_translate_view.dart` to a professional Google Lens-style OCR engine with line-level extraction (`TextLine`), aspect-ratio bounding box alignment via `ui.decodeImageFromList`, `InteractiveViewer` zoom, and tap-to-speak.
+5. **2026-10-20:** Created `PROJECT_CONTEXT.md` as the unified codebase source of truth and architectural index.
 
