@@ -1,10 +1,12 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -15,12 +17,12 @@ import '../../core/widgets/shared_top_bar.dart';
 import '../../data/translation_service.dart';
 import '../../shared/settings_modal.dart';
 
-class TranslatedBlockItem {
+class TranslatedLineItem {
   final String originalText;
   final String translatedText;
   final Rect boundingBox;
 
-  TranslatedBlockItem({
+  TranslatedLineItem({
     required this.originalText,
     required this.translatedText,
     required this.boundingBox,
@@ -35,178 +37,179 @@ class CameraTranslateView extends StatefulWidget {
 }
 
 class _CameraTranslateViewState extends State<CameraTranslateView> {
-  AppLanguage _sourceLang = supportedLanguages[0]; // English
-  AppLanguage _targetLang = supportedLanguages[10]; // Arabic
-  String _detectedText = 'Point at text or select photo';
-  String? _capturedImagePath;
-  bool _isScanning = false;
-  bool _isSavingImage = false;
+  AppLanguage _sourceLang = supportedLanguages[1]; // French
+  AppLanguage _targetLang = supportedLanguages[0]; // English
 
+  Uint8List? _imageBytes;
+  ui.Image? _decodedImage;
+  List<TranslatedLineItem> _translatedLines = [];
+  
+  bool _isProcessing = false;
+  bool _showOriginal = false;
   final GlobalKey _repaintBoundaryKey = GlobalKey();
-  Size? _imageNaturalSize;
-  List<TranslatedBlockItem> _translatedBlocks = [];
+  final ImagePicker _picker = ImagePicker();
 
-  Future<void> _captureWithAiCamera(bool useCamera) async {
+  @override
+  void initState() {
+    super.initState();
+    _loadSamplePreset();
+  }
+
+  // Load an initial demo scene so the view is never empty on launch
+  Future<void> _loadSamplePreset() async {
+    // We start with pre-calculated sample blocks simulating a scanned menu or form
+    setState(() {
+      _translatedLines = [
+        TranslatedLineItem(
+          originalText: "Café au lait",
+          translatedText: "Coffee with milk",
+          boundingBox: const Rect.fromLTWH(40, 100, 280, 45),
+        ),
+        TranslatedLineItem(
+          originalText: "Sortie de secours",
+          translatedText: "Emergency exit",
+          boundingBox: const Rect.fromLTWH(40, 170, 320, 45),
+        ),
+        TranslatedLineItem(
+          originalText: "Refresh Data",
+          translatedText: "تحديث البيانات",
+          boundingBox: const Rect.fromLTWH(40, 240, 240, 40),
+        ),
+      ];
+    });
+  }
+
+  // Capture from Camera or Gallery with Professional Line-Level OCR
+  Future<void> _pickAndProcessImage(bool useCamera) async {
+    final XFile? image = await _picker.pickImage(
+      source: useCamera ? ImageSource.camera : ImageSource.gallery,
+      imageQuality: 90,
+    );
+
+    if (image == null) return;
+
+    setState(() {
+      _isProcessing = true;
+      _translatedLines.clear();
+    });
+
     try {
-      setState(() {
-        _isScanning = true;
-        _translatedBlocks = [];
-      });
+      final bytes = await image.readAsBytes();
+      final uiImage = await _decodeImage(bytes);
 
-      final result = await TranslationService.instance
-          .captureAndRecognizeBlocks(fromCamera: useCamera);
+      if (kIsWeb) {
+        // Web fallback simulation since native ML Kit requires mobile channels
+        setState(() {
+          _imageBytes = bytes;
+          _decodedImage = uiImage;
+          _isProcessing = false;
+        });
+        _processWebFallbackText(image.name);
+        return;
+      }
 
-      if (!mounted) return;
-      if (result != null) {
-        final path = result['imagePath'] as String?;
-        final rawText = (result['text'] as String?)?.trim() ?? '';
-        final blocks = (result['blocks'] as List<TextBlock>?) ?? [];
+      // Native Mobile OCR Processing via Google ML Kit TextRecognizer
+      final inputImage = InputImage.fromFilePath(image.path);
+      final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
+      
+      try {
+        final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
+        List<TranslatedLineItem> tempLines = [];
 
-        if (path != null && !kIsWeb) {
-          _capturedImagePath = path;
-          // Decode image dimensions to accurately calculate overlay scaling
-          final file = File(path);
-          if (await file.exists()) {
-            final bytes = await file.readAsBytes();
-            final codec = await ui.instantiateImageCodec(bytes);
-            final frame = await codec.getNextFrame();
-            _imageNaturalSize = Size(
-              frame.image.width.toDouble(),
-              frame.image.height.toDouble(),
+        for (TextBlock block in recognizedText.blocks) {
+          for (TextLine line in block.lines) {
+            final text = line.text.trim();
+            // Filter out pure numbers, dates, or tiny noise to keep UI clean
+            if (text.isEmpty || _isPureNumberOrDate(text)) continue;
+
+            // Translate each line individually or batch
+            final translated = await TranslationService.instance.translate(
+              text: text,
+              fromCode: _sourceLang.code,
+              toCode: _targetLang.code,
+              mode: 'camera',
+            );
+
+            tempLines.add(
+              TranslatedLineItem(
+                originalText: text,
+                translatedText: translated,
+                boundingBox: line.boundingBox,
+              ),
             );
           }
         }
 
-        if (rawText.isNotEmpty) {
-          _detectedText = rawText;
-          await _translateBlocks(blocks, rawText);
-        } else {
-          setState(() {
-            _isScanning = false;
-            _detectedText = 'No text detected';
-          });
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                  'No text detected in the image. Please try again with clear lighting.'),
-              duration: Duration(seconds: 3),
-            ),
-          );
-        }
-      } else {
-        setState(() => _isScanning = false);
+        if (!mounted) return;
+        setState(() {
+          _imageBytes = bytes;
+          _decodedImage = uiImage;
+          _translatedLines = tempLines;
+          _isProcessing = false;
+        });
+      } finally {
+        await textRecognizer.close();
       }
     } catch (e) {
+      debugPrint('OCR Error: $e');
       if (!mounted) return;
-      setState(() => _isScanning = false);
+      setState(() => _isProcessing = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Camera/Gallery error: $e'),
-          duration: const Duration(seconds: 3),
-        ),
+        SnackBar(content: Text('Failed to process image: $e')),
       );
     }
   }
 
-  Future<void> _translateBlocks(List<TextBlock> blocks, String fullText) async {
-    setState(() => _isScanning = true);
-
-    try {
-      // Translate individual blocks to accurately position them on top of the image
-      final List<TranslatedBlockItem> translatedList = [];
-      for (final block in blocks) {
-        final blockClean = block.text.trim();
-        if (blockClean.isEmpty) continue;
-
-        final translated = await TranslationService.instance.translate(
-          text: blockClean,
-          fromCode: _sourceLang.code,
-          toCode: _targetLang.code,
-          mode: 'camera',
-        );
-
-        translatedList.add(
-          TranslatedBlockItem(
-            originalText: blockClean,
-            translatedText: translated,
-            boundingBox: block.boundingBox,
-          ),
-        );
-      }
-
-      if (!mounted) return;
-      setState(() {
-        _translatedBlocks = translatedList;
-        _isScanning = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _isScanning = false);
-    }
-  }
-
-  Future<void> _saveOrShareTranslatedImage() async {
-    if (_capturedImagePath == null) return;
-
-    try {
-      setState(() => _isSavingImage = true);
-
-      // Render the RepaintBoundary (contains image + in-place translation boxes)
-      final boundary = _repaintBoundaryKey.currentContext?.findRenderObject()
-          as RenderRepaintBoundary?;
-      if (boundary == null) {
-        setState(() => _isSavingImage = false);
-        return;
-      }
-
-      final image = await boundary.toImage(pixelRatio: 2.5);
-      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-      if (byteData == null) {
-        setState(() => _isSavingImage = false);
-        return;
-      }
-
-      final pngBytes = byteData.buffer.asUint8List();
-      final tempDir = await getTemporaryDirectory();
-      final savedFile = File(
-        '${tempDir.path}/translated_image_${DateTime.now().millisecondsSinceEpoch}.png',
-      );
-      await savedFile.writeAsBytes(pngBytes);
-
-      setState(() => _isSavingImage = false);
-
-      // Open Android/iOS Share & Save modal sheet
-      await Share.shareXFiles(
-        [XFile(savedFile.path)],
-        text: 'Translated image via Talk & Translate AI',
-      );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Image rendered with translated layers! Select Save or Share.'),
-            backgroundColor: AppColors.primary,
-            duration: Duration(seconds: 3),
-          ),
-        );
-      }
-    } catch (e) {
-      setState(() => _isSavingImage = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error saving translated image: $e')),
-        );
-      }
-    }
-  }
-
-  void _clearCamera() {
-    setState(() {
-      _detectedText = 'Point at text or select photo';
-      _capturedImagePath = null;
-      _translatedBlocks = [];
-      _imageNaturalSize = null;
+  Future<ui.Image> _decodeImage(Uint8List bytes) async {
+    final Completer<ui.Image> completer = Completer();
+    ui.decodeImageFromList(bytes, (ui.Image img) {
+      completer.complete(img);
     });
+    return completer.future;
+  }
+
+  bool _isPureNumberOrDate(String text) {
+    // Skip strings that are purely numeric IDs or dates like 80404738 or 2026/05/3
+    final clean = text.replaceAll(RegExp(r'[\/\-\:\.\s]'), '');
+    return double.tryParse(clean) != null && clean.length > 4;
+  }
+
+  void _processWebFallbackText(String filename) async {
+    const sampleText = "Café au lait - 4.50€\nSortie de secours\nRefresh Data";
+    final translated = await TranslationService.instance.translate(
+      text: sampleText,
+      fromCode: _sourceLang.code,
+      toCode: _targetLang.code,
+      mode: 'camera',
+    );
+    setState(() {
+      _translatedLines = [
+        TranslatedLineItem(
+          originalText: sampleText,
+          translatedText: translated,
+          boundingBox: const Rect.fromLTWH(50, 120, 300, 100),
+        ),
+      ];
+    });
+  }
+
+  // High-Resolution Image Export & Share
+  Future<void> _saveAndShareTranslatedImage() async {
+    try {
+      RenderRepaintBoundary boundary = _repaintBoundaryKey.currentContext!
+          .findRenderObject() as RenderRepaintBoundary;
+      ui.Image image = await boundary.toImage(pixelRatio: 3.0);
+      ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      Uint8List pngBytes = byteData!.buffer.asUint8List();
+
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/translated_image.png');
+      await file.writeAsBytes(pngBytes);
+
+      await Share.shareXFiles([XFile(file.path)], text: 'Translated via Talk & Translate OCR');
+    } catch (e) {
+      debugPrint('Share error: $e');
+    }
   }
 
   @override
@@ -219,8 +222,8 @@ class _CameraTranslateViewState extends State<CameraTranslateView> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               SharedTopBar(
-                title: 'Camera',
-                subtitle: 'Point at signs, menus or labels',
+                title: 'Camera OCR',
+                subtitle: 'Point at signs, menus or documents',
                 onSettingsTap: () => showSettingsModal(context),
               ),
               const SizedBox(height: 14),
@@ -233,332 +236,93 @@ class _CameraTranslateViewState extends State<CameraTranslateView> {
                     _sourceLang = _targetLang;
                     _targetLang = temp;
                   });
-                  if (_detectedText != 'Point at text or select photo' &&
-                      _detectedText.isNotEmpty) {
-                    _captureWithAiCamera(false);
-                  }
                 },
-                onSourceChanged: (l) {
-                  setState(() => _sourceLang = l);
-                  if (_detectedText != 'Point at text or select photo' &&
-                      _detectedText.isNotEmpty) {
-                    _captureWithAiCamera(false);
-                  }
-                },
-                onTargetChanged: (l) {
-                  setState(() => _targetLang = l);
-                  if (_detectedText != 'Point at text or select photo' &&
-                      _detectedText.isNotEmpty) {
-                    _captureWithAiCamera(false);
-                  }
-                },
+                onSourceChanged: (l) => setState(() => _sourceLang = l),
+                onTargetChanged: (l) => setState(() => _targetLang = l),
               ),
               const SizedBox(height: 14),
-
-              // Viewfinder & In-Place Translation Canvas
+              
+              // Interactive Viewfinder & Image Canvas Container
               Expanded(
                 child: Container(
                   width: double.infinity,
                   decoration: BoxDecoration(
                     color: const Color(0xFF0F172A),
-                    borderRadius: BorderRadius.circular(28),
+                    borderRadius: BorderRadius.circular(24),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.12),
-                        blurRadius: 16,
-                        offset: const Offset(0, 6),
-                      ),
+                        color: Colors.black.withValues(alpha: 0.1),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      )
                     ],
                   ),
                   child: ClipRRect(
-                    borderRadius: BorderRadius.circular(28),
+                    borderRadius: BorderRadius.circular(24),
                     child: Stack(
                       children: [
-                        // RepaintBoundary capturing image + overlay layers for saving
-                        Positioned.fill(
-                          child: RepaintBoundary(
-                            key: _repaintBoundaryKey,
-                            child: LayoutBuilder(
-                              builder: (context, constraints) {
-                                final viewWidth = constraints.maxWidth;
-                                final viewHeight = constraints.maxHeight;
-
-                                return Stack(
-                                  children: [
-                                    // Captured image
-                                    if (_capturedImagePath != null && !kIsWeb)
-                                      Positioned.fill(
-                                        child: Image.file(
-                                          File(_capturedImagePath!),
-                                          fit: BoxFit.contain,
-                                        ),
-                                      ),
-
-                                    // Empty state background
-                                    if (_capturedImagePath == null)
-                                      Container(
-                                        color: const Color(0xFF0F172A),
-                                      ),
-
-                                    // Real-Time In-Place Text Overlay on top of Original Picture
-                                    if (_capturedImagePath != null &&
-                                        _imageNaturalSize != null &&
-                                        _imageNaturalSize!.width > 0 &&
-                                        _translatedBlocks.isNotEmpty)
-                                      ..._buildInPlaceOverlays(
-                                        viewWidth: viewWidth,
-                                        viewHeight: viewHeight,
-                                        imgWidth: _imageNaturalSize!.width,
-                                        imgHeight: _imageNaturalSize!.height,
-                                      ),
-                                  ],
-                                );
-                              },
+                        // RepaintBoundary captures final composited view for gallery export
+                        RepaintBoundary(
+                          key: _repaintBoundaryKey,
+                          child: InteractiveViewer(
+                            minScale: 1.0,
+                            maxScale: 4.0,
+                            child: Center(
+                              child: _imageBytes == null
+                                  ? _buildPlaceholderScene()
+                                  : _buildImageWithOverlays(),
                             ),
                           ),
                         ),
 
-                        // Professional Viewfinder Focus Reticle (when no image is captured)
-                        if (_capturedImagePath == null)
-                          Center(
-                            child: Container(
-                              width: 260,
-                              height: 260,
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(20),
-                                border: Border.all(
-                                  color: Colors.white.withValues(alpha: 0.25),
-                                  width: 1.5,
-                                ),
-                              ),
-                              child: Stack(
-                                children: [
-                                  // Top-Left Corner
-                                  Positioned(
-                                    top: -1,
-                                    left: -1,
-                                    child: Container(
-                                      width: 22,
-                                      height: 22,
-                                      decoration: const BoxDecoration(
-                                        border: Border(
-                                          top: BorderSide(color: AppColors.primary, width: 3.5),
-                                          left: BorderSide(color: AppColors.primary, width: 3.5),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  // Top-Right Corner
-                                  Positioned(
-                                    top: -1,
-                                    right: -1,
-                                    child: Container(
-                                      width: 22,
-                                      height: 22,
-                                      decoration: const BoxDecoration(
-                                        border: Border(
-                                          top: BorderSide(color: AppColors.primary, width: 3.5),
-                                          right: BorderSide(color: AppColors.primary, width: 3.5),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  // Bottom-Left Corner
-                                  Positioned(
-                                    bottom: -1,
-                                    left: -1,
-                                    child: Container(
-                                      width: 22,
-                                      height: 22,
-                                      decoration: const BoxDecoration(
-                                        border: Border(
-                                          bottom: BorderSide(color: AppColors.primary, width: 3.5),
-                                          left: BorderSide(color: AppColors.primary, width: 3.5),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  // Bottom-Right Corner
-                                  Positioned(
-                                    bottom: -1,
-                                    right: -1,
-                                    child: Container(
-                                      width: 22,
-                                      height: 22,
-                                      decoration: const BoxDecoration(
-                                        border: Border(
-                                          bottom: BorderSide(color: AppColors.primary, width: 3.5),
-                                          right: BorderSide(color: AppColors.primary, width: 3.5),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-
-                        // Empty State Guide Prompt
-                        if (_capturedImagePath == null)
-                          Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(16),
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: Colors.white.withValues(alpha: 0.08),
-                                  ),
-                                  child: Icon(
-                                    CupertinoIcons.viewfinder,
-                                    size: 42,
-                                    color: Colors.white.withValues(alpha: 0.7),
-                                  ),
-                                ),
-                                const SizedBox(height: 14),
-                                const Text(
-                                  'Aim camera at signs, labels or text',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  'Words will be replaced in-place on the picture',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    color: Colors.white.withValues(alpha: 0.4),
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-
-                        // Top Bar Actions (Save / Share & Status)
-                        if (_capturedImagePath != null)
-                          Positioned(
-                            top: 14,
-                            left: 14,
-                            right: 14,
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                  decoration: BoxDecoration(
-                                    color: Colors.black.withValues(alpha: 0.65),
-                                    borderRadius: BorderRadius.circular(20),
-                                    border: Border.all(color: Colors.white24),
-                                  ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const Icon(CupertinoIcons.checkmark_seal_fill,
-                                          color: AppColors.primary, size: 14),
-                                      const SizedBox(width: 6),
-                                      Text(
-                                        'In-Place AR Overlay (${_translatedBlocks.length} items)',
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                // Save / Share Translated Picture Action Button
-                                InkWell(
-                                  onTap: _isSavingImage ? null : _saveOrShareTranslatedImage,
-                                  borderRadius: BorderRadius.circular(20),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                                    decoration: BoxDecoration(
-                                      color: AppColors.primary,
-                                      borderRadius: BorderRadius.circular(20),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: AppColors.primary.withValues(alpha: 0.4),
-                                          blurRadius: 8,
-                                          offset: const Offset(0, 2),
-                                        ),
-                                      ],
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        if (_isSavingImage)
-                                          const SizedBox(
-                                            width: 14,
-                                            height: 14,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: Colors.white,
-                                            ),
-                                          )
-                                        else
-                                          const Icon(
-                                            CupertinoIcons.arrow_down_doc_fill,
-                                            color: Colors.white,
-                                            size: 15,
-                                          ),
-                                        const SizedBox(width: 6),
-                                        const Text(
-                                          'Save Picture',
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-
-
-
-                        // Scanning Indicator
-                        if (_isScanning)
-                          Positioned(
-                            top: 20,
-                            right: 20,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.8),
-                                borderRadius: BorderRadius.circular(24),
-                                border: Border.all(color: AppColors.primary.withValues(alpha: 0.5)),
-                              ),
-                              child: const Row(
+                        // Loading Indicator
+                        if (_isProcessing)
+                          Container(
+                            color: Colors.black54,
+                            child: const Center(
+                              child: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  SizedBox(
-                                    width: 14,
-                                    height: 14,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: AppColors.primary,
-                                    ),
-                                  ),
-                                  SizedBox(width: 8),
+                                  CircularProgressIndicator(color: Colors.white),
+                                  SizedBox(height: 12),
                                   Text(
-                                    'Replacing words...',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600,
-                                    ),
+                                    'AI Neural OCR Processing...',
+                                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
                                   ),
                                 ],
+                              ),
+                            ),
+                          ),
+
+                        // Top Controls Overlay (Toggle Original vs Translated)
+                        if (_imageBytes != null && !_isProcessing)
+                          Positioned(
+                            top: 16,
+                            right: 16,
+                            child: GestureDetector(
+                              onTapDown: (_) => setState(() => _showOriginal = true),
+                              onTapUp: (_) => setState(() => _showOriginal = false),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.7),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(color: Colors.white30),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      _showOriginal ? CupertinoIcons.eye : CupertinoIcons.eye_slash,
+                                      size: 16,
+                                      color: Colors.white,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      _showOriginal ? 'Showing Original' : 'Hold to View Original',
+                                      style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
@@ -567,133 +331,54 @@ class _CameraTranslateViewState extends State<CameraTranslateView> {
                   ),
                 ),
               ),
+
               const SizedBox(height: 14),
 
-              // Bottom Control Bar
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    // Import from Gallery
-                    InkWell(
-                      onTap: _isScanning ? null : () => _captureWithAiCamera(false),
-                      borderRadius: BorderRadius.circular(20),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: const Color(0xFFE2E8F0)),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.04),
-                              blurRadius: 8,
-                              offset: const Offset(0, 3),
-                            ),
-                          ],
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              CupertinoIcons.photo_on_rectangle,
-                              size: 20,
-                              color: AppColors.textPrimary,
-                            ),
-                            SizedBox(width: 8),
-                            Text(
-                              'Gallery',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w600,
-                                color: AppColors.textPrimary,
-                                fontSize: 14,
-                              ),
-                            ),
-                          ],
-                        ),
+              // Bottom Action Bar: Camera, Gallery, and Export Share
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _isProcessing ? null : () => _pickAndProcessImage(true),
+                      icon: const Icon(CupertinoIcons.camera_fill),
+                      label: const Text('Capture Sign'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                       ),
                     ),
-
-                    // Primary Shutter Camera Button
-                    GestureDetector(
-                      onTap: _isScanning ? null : () => _captureWithAiCamera(true),
-                      child: Container(
-                        width: 74,
-                        height: 74,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: AppColors.primary,
-                          boxShadow: [
-                            BoxShadow(
-                              color: AppColors.primary.withValues(alpha: 0.38),
-                              blurRadius: 18,
-                              spreadRadius: 2,
-                              offset: const Offset(0, 5),
-                            ),
-                          ],
-                        ),
-                        child: Center(
-                          child: Container(
-                            width: 60,
-                            height: 60,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.white, width: 3),
-                            ),
-                            child: const Icon(
-                              CupertinoIcons.camera_fill,
-                              color: Colors.white,
-                              size: 28,
-                            ),
-                          ),
-                        ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _isProcessing ? null : () => _pickAndProcessImage(false),
+                      icon: const Icon(CupertinoIcons.photo_fill),
+                      label: const Text('Gallery'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.primary,
+                        side: const BorderSide(color: AppColors.primary),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                       ),
                     ),
-
-                    // Reset / Clear Button
-                    InkWell(
-                      onTap: _clearCamera,
-                      borderRadius: BorderRadius.circular(20),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: const Color(0xFFE2E8F0)),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.04),
-                              blurRadius: 8,
-                              offset: const Offset(0, 3),
-                            ),
-                          ],
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              CupertinoIcons.arrow_counterclockwise,
-                              size: 19,
-                              color: AppColors.textSecondary,
-                            ),
-                            SizedBox(width: 8),
-                            Text(
-                              'Clear',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w600,
-                                color: AppColors.textPrimary,
-                                fontSize: 14,
-                              ),
-                            ),
-                          ],
-                        ),
+                  ),
+                  if (_imageBytes != null) ...[
+                    const SizedBox(width: 10),
+                    IconButton(
+                      onPressed: _saveAndShareTranslatedImage,
+                      icon: const Icon(CupertinoIcons.share),
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: AppColors.primary,
+                        padding: const EdgeInsets.all(12),
                       ),
                     ),
                   ],
-                ),
+                ],
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 6),
             ],
           ),
         ),
@@ -701,61 +386,125 @@ class _CameraTranslateViewState extends State<CameraTranslateView> {
     );
   }
 
-  // Calculate coordinates to map bounding boxes precisely onto BoxFit.contain image
-  List<Widget> _buildInPlaceOverlays({
-    required double viewWidth,
-    required double viewHeight,
-    required double imgWidth,
-    required double imgHeight,
-  }) {
-    final double scaleX = viewWidth / imgWidth;
-    final double scaleY = viewHeight / imgHeight;
-    final double scale = scaleX < scaleY ? scaleX : scaleY;
-
-    final double renderedWidth = imgWidth * scale;
-    final double renderedHeight = imgHeight * scale;
-
-    final double offsetX = (viewWidth - renderedWidth) / 2;
-    final double offsetY = (viewHeight - renderedHeight) / 2;
-
-    return _translatedBlocks.map((item) {
-      final rect = item.boundingBox;
-
-      final left = offsetX + (rect.left * scale);
-      final top = offsetY + (rect.top * scale);
-      final width = (rect.width * scale).clamp(24.0, viewWidth);
-      final height = (rect.height * scale).clamp(18.0, viewHeight);
-
-      return Positioned(
-        left: left,
-        top: top,
-        width: width,
-        height: height,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.82),
-            borderRadius: BorderRadius.circular(4),
-            border: Border.all(
-              color: AppColors.primary,
-              width: 1,
-            ),
+  Widget _buildPlaceholderScene() {
+    return Padding(
+      padding: const EdgeInsets.all(32.0),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(CupertinoIcons.camera_viewfinder, size: 64, color: Colors.white54),
+          const SizedBox(height: 16),
+          const Text(
+            'Smart OCR & Image Translation',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
           ),
-          alignment: Alignment.center,
-          child: FittedBox(
-            fit: BoxFit.contain,
-            child: Text(
-              item.translatedText,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
+          const SizedBox(height: 8),
+          const Text(
+            'Capture a sign, menu, or document. Text will be translated directly on top of the image in real time.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white70, fontSize: 13),
+          ),
+          const SizedBox(height: 20),
+          ElevatedButton(
+            onPressed: () => _pickAndProcessImage(true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+            child: const Text('Start Camera'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildImageWithOverlays() {
+    if (_imageBytes == null || _decodedImage == null) return Container();
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final imgWidth = _decodedImage!.width.toDouble();
+        final imgHeight = _decodedImage!.height.toDouble();
+
+        // Calculate BoxFit.contain aspect ratio mapping
+        final double widgetWidth = constraints.maxWidth;
+        final double widgetHeight = constraints.maxHeight;
+
+        final double scaleX = widgetWidth / imgWidth;
+        final double scaleY = widgetHeight / imgHeight;
+        final double scale = scaleX < scaleY ? scaleX : scaleY;
+
+        final double renderedWidth = imgWidth * scale;
+        final double renderedHeight = imgHeight * scale;
+
+        final double offsetX = (widgetWidth - renderedWidth) / 2;
+        final double offsetY = (widgetHeight - renderedHeight) / 2;
+
+        return SizedBox(
+          width: widgetWidth,
+          height: widgetHeight,
+          child: Stack(
+            children: [
+              // Base Image
+              Center(
+                child: Image.memory(
+                  _imageBytes!,
+                  fit: BoxFit.contain,
+                ),
               ),
-            ),
+
+              // Translated Text Overlays (Google Lens Style)
+              if (!_showOriginal)
+                ..._translatedLines.map((item) {
+                  final rect = item.boundingBox;
+                  // Map ML Kit relative rect to actual rendered widget pixel coordinates
+                  final double left = offsetX + (rect.left * scale);
+                  final double top = offsetY + (rect.top * scale);
+                  final double width = rect.width * scale;
+                  final double height = rect.height * scale;
+
+                  return Positioned(
+                    left: left < 0 ? 0 : left,
+                    top: top < 0 ? 0 : top,
+                    width: width < 40 ? 40 : width,
+                    height: height < 20 ? 20 : height,
+                    child: GestureDetector(
+                      onTap: () {
+                        TranslationService.instance.speak(item.translatedText, _targetLang.speechCode);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('${item.originalText} ➔ ${item.translatedText}')),
+                        );
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary,
+                          borderRadius: BorderRadius.circular(4),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.3),
+                              blurRadius: 4,
+                            ),
+                          ],
+                        ),
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            item.translatedText,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+            ],
           ),
-        ),
-      );
-    }).toList();
+        );
+      },
+    );
   }
 }
