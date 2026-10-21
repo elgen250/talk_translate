@@ -382,7 +382,7 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
         await TranslationService.instance.speech!.listen(
           listenOptions: stt.SpeechListenOptions(
             listenFor: const Duration(hours: 1),
-            pauseFor: const Duration(seconds: 15),
+            pauseFor: const Duration(seconds: 3),
             localeId: effectiveLocale,
             onDevice: false,
             cancelOnError: false,
@@ -426,6 +426,9 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
 
             if (result.finalResult && words.isNotEmpty) {
               _commitCurrentSessionWords(speakerTwo: speakerTwo);
+              // Restart immediately when sentence ends so next sentence is caught without delay
+              _scheduleContinuousRestart(
+                  speakerTwo: speakerTwo, reason: 'finalResult', delayMs: 200);
             }
           },
         );
