@@ -304,6 +304,7 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
             ? chunk
             : '$_speakerTwoAccumulatedSpokenText $chunk';
         _speakerTwoCurrentSessionWords = '';
+        debugPrint('STT commit [speakerTwo]: "$chunk" -> total: "$_speakerTwoAccumulatedSpokenText"');
       }
     } else {
       final chunk = _currentSessionWords.trim();
@@ -312,6 +313,7 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
             ? chunk
             : '$_accumulatedSpokenText $chunk';
         _currentSessionWords = '';
+        debugPrint('STT commit [speakerOne]: "$chunk" -> total: "$_accumulatedSpokenText"');
       }
     }
   }
@@ -327,10 +329,10 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
           if (errStr.contains('error_no_match') ||
               errStr.contains('error_speech_timeout')) {
             _scheduleContinuousRestart(
-                speakerTwo: speakerTwo, reason: 'silence_timeout', delayMs: 350);
+                speakerTwo: speakerTwo, reason: 'silence_timeout', delayMs: 250);
           } else if (errStr.contains('error_busy') || errStr.contains('error_client')) {
             _scheduleContinuousRestart(
-                speakerTwo: speakerTwo, reason: 'busy_client_backoff', delayMs: 500);
+                speakerTwo: speakerTwo, reason: 'busy_client_backoff', delayMs: 400);
           } else {
             _scheduleContinuousRestart(
                 speakerTwo: speakerTwo, reason: 'error: $err', delayMs: 400);
@@ -342,7 +344,7 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
           if (status == 'notListening' || status == 'done' || status == 'doneNoResult') {
             _commitCurrentSessionWords(speakerTwo: speakerTwo);
             _scheduleContinuousRestart(
-                speakerTwo: speakerTwo, reason: 'status: $status', delayMs: 350);
+                speakerTwo: speakerTwo, reason: 'status: $status', delayMs: 250);
           }
         },
       );
@@ -369,6 +371,8 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
           debugPrint('Locale lookup error: $e');
         }
 
+        debugPrint('STT starting listen with locale: $effectiveLocale (active: ${activeLang.name})');
+
         await TranslationService.instance.speech!.listen(
           listenOptions: stt.SpeechListenOptions(
             listenFor: const Duration(hours: 1),
@@ -382,6 +386,7 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
           onResult: (result) {
             if (!mounted || _userRequestedStop) return;
             final words = result.recognizedWords.trim();
+            debugPrint('STT onResult: words="$words", isFinal=${result.finalResult}');
 
             if (words.isNotEmpty) {
               _offlineNotice = null;
