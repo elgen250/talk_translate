@@ -65,8 +65,6 @@ class OcrTranslatedItem {
 enum CameraSolutionMode {
   googleLensAR,     // وضع Google Lens المباشر: مطابقة تامة للحجم والمكان وتغطية النص القديم
   interactiveSheet, // الحل 2: التحديد التفاعلي الهادئ وقائمة سفلية
-  readerList,       // الحل 3: قائمة المستند المنظمة للقراءة والنسخ
-  mergedParagraphs, // الحل 4: دمج الفقرات
 }
 
 /// A dedicated comparison widget implementing all OCR solutions with exact in-place Google Lens alignment.
@@ -165,19 +163,27 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
     });
   }
 
-  /// Heuristic noise detector to weed out keyboard keys, single letters, and UI artifacts
+  /// Heuristic noise detector to weed out keyboard keys, single non-letter symbols, and UI artifacts
   bool _isNoiseOrKeyboardArtifact(String text) {
     final clean = text.trim();
     if (clean.isEmpty) return true;
 
-    // Filter pure long numbers or serials (e.g. 80404738)
+    // Filter pure long barcode numbers or serials (e.g. 80404738910)
     final numClean = clean.replaceAll(RegExp(r'[\/\-\:\.\s,\$€£%#]'), '');
-    if (double.tryParse(numClean) != null && numClean.length > 5) return true;
+    if (double.tryParse(numClean) != null && numClean.length > 7) return true;
 
-    // Filter isolated single characters unless allowed valid words
+    // Filter isolated non-alphanumeric punctuation
     if (clean.length == 1) {
-      const allowedSingleChars = {'a', 'i', 'y', 'à', 'و', '&', '+', 'c'};
-      if (!allowedSingleChars.contains(clean.toLowerCase())) return true;
+      final code = clean.codeUnitAt(0);
+      final isLetterOrDigit = (code >= 65 && code <= 90) || // A-Z
+          (code >= 97 && code <= 122) || // a-z
+          (code >= 48 && code <= 57) || // 0-9
+          (code >= 0xC0 && code <= 0x024F) || // Latin accented
+          (code >= 0x0600 && code <= 0x06FF) || // Arabic
+          (code >= 0x4E00 && code <= 0x9FFF) || // CJK unified ideographs
+          (code >= 0x3040 && code <= 0x30FF) || // Hiragana / Katakana
+          (code >= 0xAC00 && code <= 0xD7AF);   // Korean Hangul
+      if (!isLetterOrDigit) return true;
     }
 
     // Filter common on-screen keyboard keys and shortcuts
@@ -189,7 +195,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
     if (keyboardKeys.contains(lower)) return true;
 
     // Pure symbols/punctuation without letters or digits
-    if (RegExp(r'^[^a-zA-Z0-9\u0600-\u06FF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]+$').hasMatch(clean)) {
+    if (RegExp(r'^[^a-zA-Z0-9\u00C0-\u024F\u0600-\u06FF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]+$').hasMatch(clean)) {
       return true;
     }
 
@@ -197,45 +203,67 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
   }
 
   /// Samples the exact background color around the text line from the original image pixels
+  /// using dominant mode clustering (rejects text stroke pixels)
   Color _sampleBackgroundColor(ui.Image image, ByteData? rawRgba, Rect rect) {
     if (rawRgba == null) return const Color(0xFFF1F5F9);
 
     final int imgW = image.width;
     final int imgH = image.height;
 
-    // Sample 6 perimeter points around the bounding box (corners and margins)
-    final points = [
+    // Sample perimeter points strictly within the inner margins of the bounding box
+    final points = <Offset>[
       Offset(rect.left + 2, rect.top + 2),
       Offset(rect.right - 2, rect.top + 2),
       Offset(rect.left + 2, rect.bottom - 2),
       Offset(rect.right - 2, rect.bottom - 2),
-      Offset(rect.left + (rect.width / 2), (rect.top - 2).clamp(0, imgH - 1)),
-      Offset(rect.left + (rect.width / 2), (rect.bottom + 2).clamp(0, imgH - 1)),
+      Offset(rect.left + (rect.width * 0.25), rect.top + 2),
+      Offset(rect.left + (rect.width * 0.75), rect.top + 2),
+      Offset(rect.left + (rect.width * 0.25), rect.bottom - 2),
+      Offset(rect.left + (rect.width * 0.75), rect.bottom - 2),
+      Offset(rect.left + 2, rect.top + (rect.height * 0.5)),
+      Offset(rect.right - 2, rect.top + (rect.height * 0.5)),
     ];
 
-    int totalR = 0, totalG = 0, totalB = 0, count = 0;
-
+    final colors = <Color>[];
     for (final pt in points) {
       final int px = pt.dx.toInt().clamp(0, imgW - 1);
       final int py = pt.dy.toInt().clamp(0, imgH - 1);
       final int index = (py * imgW + px) * 4;
 
       if (index >= 0 && index + 3 < rawRgba.lengthInBytes) {
-        totalR += rawRgba.getUint8(index);
-        totalG += rawRgba.getUint8(index + 1);
-        totalB += rawRgba.getUint8(index + 2);
-        count++;
+        colors.add(Color.fromARGB(
+          255,
+          rawRgba.getUint8(index),
+          rawRgba.getUint8(index + 1),
+          rawRgba.getUint8(index + 2),
+        ));
       }
     }
 
-    if (count == 0) return const Color(0xFFF1F5F9);
+    if (colors.isEmpty) return const Color(0xFFF1F5F9);
 
-    return Color.fromARGB(
-      255,
-      (totalR / count).round(),
-      (totalG / count).round(),
-      (totalB / count).round(),
-    );
+    // Pick dominant color cluster (mode) instead of arithmetic mean
+    // This rejects text stroke pixels and extracts true background surface color
+    Color bestColor = colors.first;
+    int maxClusterCount = 0;
+
+    for (final c in colors) {
+      int count = 0;
+      for (final other in colors) {
+        final dr = ((c.r - other.r).abs() * 255.0).round();
+        final dg = ((c.g - other.g).abs() * 255.0).round();
+        final db = ((c.b - other.b).abs() * 255.0).round();
+        if (dr + dg + db < 75) {
+          count++;
+        }
+      }
+      if (count > maxClusterCount) {
+        maxClusterCount = count;
+        bestColor = c;
+      }
+    }
+
+    return bestColor;
   }
 
   /// Computes optimal text color ensuring maximum contrast against the sampled background
@@ -250,9 +278,6 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
   Future<void> _pickAndProcessImage(bool useCamera) async {
     final XFile? image = await _picker.pickImage(
       source: useCamera ? ImageSource.camera : ImageSource.gallery,
-      maxWidth: 1600,
-      maxHeight: 1600,
-      imageQuality: 90,
     );
 
     if (image == null) return;
@@ -360,7 +385,13 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
           final last = cluster.last;
           final double vertGap = (item.box.top - last.box.bottom).abs();
           final double avgHeight = (item.box.height + last.box.height) / 2.0;
-          if (vertGap <= avgHeight * 1.5) {
+          final double horizOverlap = (item.box.right < last.box.left || item.box.left > last.box.right) ? 0.0 : 1.0;
+          final double horizGap = item.box.left > last.box.right
+              ? item.box.left - last.box.right
+              : (last.box.left > item.box.right ? last.box.left - item.box.right : 0.0);
+          final bool isHorizontallyNear = horizOverlap > 0 || horizGap < (last.box.width.clamp(40.0, 300.0));
+
+          if (vertGap <= avgHeight * 1.3 && isHorizontallyNear) {
             cluster.add(item);
             added = true;
             break;
@@ -426,30 +457,31 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
                 );
               }
             } else {
-              // Fallback: translate lines individually using the cluster's detected language
-              for (int i = 0; i < cluster.length; i++) {
-                final it = cluster[i];
-                String lineTrans = (i < translatedLines.length && translatedLines[i].trim().isNotEmpty)
-                    ? translatedLines[i].trim()
-                    : '';
-                if (lineTrans.isEmpty) {
+              // Fallback: translate lines individually using the cluster's detected language with 1:1 precision
+              final individualTranslations = await Future.wait(
+                cluster.map((it) async {
                   try {
-                    final r = await TranslationService.instance.translate(
+                    final t = await TranslationService.instance.translate(
                       text: it.text,
                       fromCode: detected,
                       toCode: _targetLang.code,
                       mode: 'camera',
                     );
-                    lineTrans = r.isNotEmpty ? r : it.text;
+                    return t.isNotEmpty ? t : it.text;
                   } catch (_) {
-                    lineTrans = it.text;
+                    return it.text;
                   }
-                }
+                }),
+              );
+
+              for (int i = 0; i < cluster.length; i++) {
+                final it = cluster[i];
+                final tLine = individualTranslations[i].trim();
                 clusterLensItems.add(
                   OcrTranslatedItem(
                     id: it.id,
                     originalText: it.text,
-                    translatedText: lineTrans,
+                    translatedText: tLine.isNotEmpty ? tLine : it.text,
                     boundingBox: it.box,
                     backgroundColor: it.bgColor,
                     textColor: it.fgColor,
@@ -957,9 +989,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
               const SizedBox(height: 10),
 
               Expanded(
-                child: _activeMode == CameraSolutionMode.readerList
-                    ? _buildReaderListMode()
-                    : _buildCanvasViewfinder(),
+                child: _buildCanvasViewfinder(),
               ),
 
               const SizedBox(height: 12),
@@ -972,7 +1002,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
     );
   }
 
-  /// Segmented button row allowing instant live switching between all modes
+  /// Segmented button row allowing instant live switching between the 2 modes
   Widget _buildSolutionsControlBar() {
     return Container(
       padding: const EdgeInsets.all(4),
@@ -991,7 +1021,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
               icon: CupertinoIcons.viewfinder,
             ),
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 6),
 
           // Button 2: Interactive Focus & Sheet
           Expanded(
@@ -1000,28 +1030,6 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
               title: '2. Focus & Sheet',
               subtitle: 'تحديد وقائمة',
               icon: CupertinoIcons.viewfinder_circle_fill,
-            ),
-          ),
-          const SizedBox(width: 4),
-
-          // Button 3: Reader List Mode
-          Expanded(
-            child: _buildModeTabButton(
-              mode: CameraSolutionMode.readerList,
-              title: '3. Reader List',
-              subtitle: 'قائمة مقروءة',
-              icon: CupertinoIcons.list_bullet_below_rectangle,
-            ),
-          ),
-          const SizedBox(width: 4),
-
-          // Button 4: Merged Paragraphs
-          Expanded(
-            child: _buildModeTabButton(
-              mode: CameraSolutionMode.mergedParagraphs,
-              title: '4. Merged Lens',
-              subtitle: 'دمج الفقرات',
-              icon: CupertinoIcons.rectangle_stack,
             ),
           ),
         ],
@@ -1214,10 +1222,6 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         return 'Google Lens: Exact 1:1 In-Place';
       case CameraSolutionMode.interactiveSheet:
         return 'Focus & Sheet: Tap to Inspect';
-      case CameraSolutionMode.readerList:
-        return 'Document Reader List';
-      case CameraSolutionMode.mergedParagraphs:
-        return 'Merged Paragraphs Lens';
     }
   }
 
@@ -1274,45 +1278,37 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         final double renderedWidth = imgWidth * scale;
         final double renderedHeight = imgHeight * scale;
 
-        final double offsetX = (widgetWidth - renderedWidth) / 2.0;
-        final double offsetY = (widgetHeight - renderedHeight) / 2.0;
-
-        final itemsToRender = (_activeMode == CameraSolutionMode.mergedParagraphs)
-            ? _mergedItems
-            : _lensLineItems;
-
-        return SizedBox(
-          width: widgetWidth,
-          height: widgetHeight,
-          child: Stack(
-            children: [
-              // 1. Base Image
-              Center(
-                child: Image.memory(
-                  _imageBytes!,
-                  fit: BoxFit.contain,
+        return Center(
+          child: SizedBox(
+            width: renderedWidth,
+            height: renderedHeight,
+            child: Stack(
+              children: [
+                // 1. Base Image exactly matching the SizedBox bounds
+                Positioned.fill(
+                  child: Image.memory(
+                    _imageBytes!,
+                    fit: BoxFit.fill,
+                  ),
                 ),
-              ),
 
-              // 2. Exact Overlays rendered dynamically
-              if (!_showOriginal)
-                ...itemsToRender.map((item) {
-                  final rect = item.boundingBox;
-                  // Exact pixel mapping to the screen
-                  final double left = offsetX + (rect.left * scale);
-                  final double top = offsetY + (rect.top * scale);
-                  final double width = rect.width * scale;
-                  final double height = rect.height * scale;
+                // 2. Exact Overlays rendered dynamically in identical coordinate space
+                if (!_showOriginal)
+                  ..._lensLineItems.map((item) {
+                    final rect = item.boundingBox;
+                    final double left = rect.left * scale;
+                    final double top = rect.top * scale;
+                    final double width = rect.width * scale;
+                    final double height = rect.height * scale;
 
-                  if (_activeMode == CameraSolutionMode.googleLensAR) {
-                    return _buildGoogleLensOverlay(item, left, top, width, height);
-                  } else if (_activeMode == CameraSolutionMode.interactiveSheet) {
-                    return _buildInteractiveFocusOverlay(item, left, top, width, height);
-                  } else {
-                    return _buildMergedParagraphOverlay(item, left, top, width, height);
-                  }
-                }),
-            ],
+                    if (_activeMode == CameraSolutionMode.googleLensAR) {
+                      return _buildGoogleLensOverlay(item, left, top, width, height);
+                    } else {
+                      return _buildInteractiveFocusOverlay(item, left, top, width, height);
+                    }
+                  }),
+              ],
+            ),
           ),
         );
       },
@@ -1351,18 +1347,19 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         child: Container(
           width: width + 2,
           height: height + 2,
-          alignment: isRtl ? Alignment.centerRight : Alignment.centerLeft,
-          padding: const EdgeInsets.symmetric(horizontal: 1),
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(horizontal: 2),
           decoration: BoxDecoration(
             color: item.backgroundColor,
             borderRadius: BorderRadius.circular(2),
           ),
           child: FittedBox(
             fit: BoxFit.scaleDown,
-            alignment: isRtl ? Alignment.centerRight : Alignment.centerLeft,
+            alignment: Alignment.center,
             child: Text(
               item.translatedText,
               maxLines: 1,
+              textAlign: TextAlign.center,
               textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
               style: TextStyle(
                 color: item.textColor,
@@ -1422,217 +1419,6 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  /// Solution 4: Merged Paragraphs with frosted dark background
-  Widget _buildMergedParagraphOverlay(
-    OcrTranslatedItem item,
-    double left,
-    double top,
-    double width,
-    double height,
-  ) {
-    final bool isRtl = RegExp(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]').hasMatch(item.translatedText);
-
-    return Positioned(
-      left: left,
-      top: top,
-      width: width,
-      height: height,
-      child: GestureDetector(
-        onTap: () {
-          TranslationService.instance.speak(item.translatedText, _targetLang.speechCode);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('${item.originalText} ➔ ${item.translatedText}'),
-              duration: const Duration(seconds: 2),
-            ),
-          );
-        },
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-          alignment: isRtl ? Alignment.centerRight : Alignment.centerLeft,
-          decoration: BoxDecoration(
-            color: const Color(0xE60F172A),
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: Colors.white30, width: 0.8),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.35),
-                blurRadius: 6,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: isRtl ? Alignment.centerRight : Alignment.centerLeft,
-            child: Text(
-              item.translatedText,
-              textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 13,
-                height: 1.2,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// Solution 3: Document / Reader List Mode
-  Widget _buildReaderListMode() {
-    final items = _lensLineItems.isNotEmpty ? _lensLineItems : _mergedItems;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
-      ),
-      child: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-              border: Border(bottom: BorderSide(color: Color(0xFFE2E8F0))),
-            ),
-            child: Row(
-              children: [
-                Icon(CupertinoIcons.doc_text_fill, size: 18, color: AppColors.primary),
-                const SizedBox(width: 8),
-                Text(
-                  'Extracted Document (${items.length} lines)',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 13,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                const Spacer(),
-                if (items.isNotEmpty)
-                  TextButton.icon(
-                    onPressed: () {
-                      final fullText = items.map((e) => e.translatedText).join('\n');
-                      Clipboard.setData(ClipboardData(text: fullText));
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Copied all translated text to clipboard!')),
-                      );
-                    },
-                    icon: const Icon(CupertinoIcons.doc_on_clipboard, size: 14),
-                    label: const Text('Copy All', style: TextStyle(fontSize: 12)),
-                    style: TextButton.styleFrom(foregroundColor: AppColors.primary),
-                  ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: items.isEmpty
-                ? const Center(
-                    child: Text(
-                      'No text extracted yet. Capture an image to view document text.',
-                      style: TextStyle(color: Colors.grey),
-                    ),
-                  )
-                : ListView.separated(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: items.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 10),
-                    itemBuilder: (context, index) {
-                      final item = items[index];
-                      final itemSourceLang = item.sourceLangCode != null
-                          ? (getLanguageByCode(item.sourceLangCode!) ?? _sourceLang)
-                          : (_detectedCameraLang ?? _sourceLang);
-                      return Container(
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: const Color(0xFFE2E8F0)),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.03),
-                              blurRadius: 6,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(itemSourceLang.flag, style: const TextStyle(fontSize: 14)),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    item.originalText,
-                                    style: const TextStyle(
-                                      fontSize: 13,
-                                      color: AppColors.textSecondary,
-                                      height: 1.3,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const Padding(
-                              padding: EdgeInsets.symmetric(vertical: 8),
-                              child: Divider(height: 1, color: Color(0xFFF1F5F9)),
-                            ),
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(_targetLang.flag, style: const TextStyle(fontSize: 14)),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    item.translatedText,
-                                    style: const TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.bold,
-                                      color: AppColors.textPrimary,
-                                      height: 1.35,
-                                    ),
-                                  ),
-                                ),
-                                IconButton(
-                                  icon: const Icon(CupertinoIcons.speaker_2, size: 18),
-                                  color: AppColors.primary,
-                                  onPressed: () {
-                                    TranslationService.instance.speak(
-                                      item.translatedText,
-                                      _targetLang.speechCode,
-                                    );
-                                  },
-                                ),
-                                IconButton(
-                                  icon: const Icon(CupertinoIcons.doc_on_clipboard, size: 18),
-                                  color: AppColors.primary,
-                                  onPressed: () {
-                                    Clipboard.setData(ClipboardData(text: item.translatedText));
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(content: Text('Translation copied!')),
-                                    );
-                                  },
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ],
       ),
     );
   }

@@ -34,6 +34,8 @@ class TranslationService {
     required XFile imageFile,
     required Uint8List bytes,
   }) async {
+    final List<RecognizedLineData> mlKitLines = [];
+
     // 1. Native Mobile: On-Device Google ML Kit Text Recognition
     if (!kIsWeb &&
         (defaultTargetPlatform == TargetPlatform.android ||
@@ -43,17 +45,13 @@ class TranslationService {
         final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
         try {
           final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
-          final List<RecognizedLineData> lines = [];
           for (final block in recognizedText.blocks) {
             for (final line in block.lines) {
               final t = line.text.trim();
               if (t.isNotEmpty) {
-                lines.add(RecognizedLineData(text: t, boundingBox: line.boundingBox));
+                mlKitLines.add(RecognizedLineData(text: t, boundingBox: line.boundingBox));
               }
             }
-          }
-          if (lines.isNotEmpty) {
-            return lines;
           }
         } finally {
           await textRecognizer.close();
@@ -63,9 +61,18 @@ class TranslationService {
       }
     }
 
-    // 2. Web, Desktop, and Mobile Fallback: Cloud OCR Engine 2
+    final bool isOnline = await hasInternetConnection();
+    // If device is offline or native ML Kit found a very comprehensive scan (>= 25 lines), return it directly
+    if (!isOnline || mlKitLines.length >= 25) {
+      if (mlKitLines.isNotEmpty) return mlKitLines;
+    }
+
+    // 2. Web, Desktop, and Cloud OCR Engine 2 (scale=false for exact 1:1 coordinates)
     try {
-      final base64Image = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+      final String mime = (bytes.length > 4 && bytes[0] == 0x89 && bytes[1] == 0x50)
+          ? 'image/png'
+          : 'image/jpeg';
+      final base64Image = 'data:$mime;base64,${base64Encode(bytes)}';
       final response = await http.post(
         Uri.parse('https://api.ocr.space/parse/image'),
         headers: {'apikey': 'helloworld'},
@@ -73,17 +80,17 @@ class TranslationService {
           'base64Image': base64Image,
           'isOverlayRequired': 'true',
           'detectOrientation': 'true',
-          'scale': 'true',
+          'scale': 'false',
           'OCREngine': '2',
         },
-      ).timeout(const Duration(seconds: 15));
+      ).timeout(const Duration(seconds: 12));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (data['OCRExitCode'] == 1) {
           final results = data['ParsedResults'] as List?;
           if (results != null && results.isNotEmpty) {
-            final List<RecognizedLineData> lines = [];
+            final List<RecognizedLineData> cloudLines = [];
             for (final res in results) {
               final overlay = res['TextOverlay'];
               if (overlay != null) {
@@ -110,7 +117,7 @@ class TranslationService {
                     }
 
                     if (minL < maxR && minT < maxB) {
-                      lines.add(
+                      cloudLines.add(
                         RecognizedLineData(
                           text: lineText,
                           boundingBox: Rect.fromLTRB(
@@ -126,8 +133,8 @@ class TranslationService {
                 }
               }
             }
-            if (lines.isNotEmpty) {
-              return lines;
+            if (cloudLines.length > mlKitLines.length) {
+              return cloudLines;
             }
           }
         }
@@ -136,7 +143,7 @@ class TranslationService {
       debugPrint('Cloud OCR error: $e');
     }
 
-    return const <RecognizedLineData>[];
+    return mlKitLines;
   }
 
   // فتح الكاميرا أو المعرض واستخراج النص بالذكاء الاصطناعي (AI OCR)
