@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
@@ -27,6 +28,10 @@ class OcrTranslatedItem {
   final Color textColor;
   final bool isNoise;
   final String? sourceLangCode;
+  final double angle;
+  final Offset center;
+  final double width;
+  final double height;
 
   OcrTranslatedItem({
     required this.id,
@@ -37,7 +42,13 @@ class OcrTranslatedItem {
     this.textColor = const Color(0xFF0F172A),
     this.isNoise = false,
     this.sourceLangCode,
-  });
+    this.angle = 0.0,
+    Offset? center,
+    double? width,
+    double? height,
+  })  : center = center ?? boundingBox.center,
+        width = width ?? boundingBox.width,
+        height = height ?? boundingBox.height;
 
   OcrTranslatedItem copyWith({
     String? originalText,
@@ -47,6 +58,10 @@ class OcrTranslatedItem {
     Color? textColor,
     bool? isNoise,
     String? sourceLangCode,
+    double? angle,
+    Offset? center,
+    double? width,
+    double? height,
   }) {
     return OcrTranslatedItem(
       id: id,
@@ -57,6 +72,10 @@ class OcrTranslatedItem {
       textColor: textColor ?? this.textColor,
       isNoise: isNoise ?? this.isNoise,
       sourceLangCode: sourceLangCode ?? this.sourceLangCode,
+      angle: angle ?? this.angle,
+      center: center ?? this.center,
+      width: width ?? this.width,
+      height: height ?? this.height,
     );
   }
 }
@@ -353,6 +372,10 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         Rect box,
         Color bgColor,
         Color fgColor,
+        double angle,
+        Offset center,
+        double width,
+        double height,
       })> candidateLines = [];
 
       int lineCounter = 0;
@@ -364,12 +387,32 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         final Color bg = _sampleBackgroundColor(uiImage, rawRgba, line.boundingBox);
         final Color fg = _getTextColorForBackground(bg);
 
+        double angle = line.angle;
+        Offset center = line.boundingBox.center;
+        double lineW = line.boundingBox.width;
+        double lineH = line.boundingBox.height;
+
+        final pts = line.cornerPoints;
+        if (pts != null && pts.length >= 4) {
+          center = Offset(
+            (pts[0].dx + pts[1].dx + pts[2].dx + pts[3].dx) / 4.0,
+            (pts[0].dy + pts[1].dy + pts[2].dy + pts[3].dy) / 4.0,
+          );
+          lineW = math.sqrt(math.pow(pts[1].dx - pts[0].dx, 2) + math.pow(pts[1].dy - pts[0].dy, 2));
+          lineH = math.sqrt(math.pow(pts[3].dx - pts[0].dx, 2) + math.pow(pts[3].dy - pts[0].dy, 2));
+          angle = math.atan2(pts[1].dy - pts[0].dy, pts[1].dx - pts[0].dx);
+        }
+
         candidateLines.add((
           id: 'line_$lineCounter',
           text: text,
           box: line.boundingBox,
           bgColor: bg,
           fgColor: fg,
+          angle: angle,
+          center: center,
+          width: lineW,
+          height: lineH,
         ));
       }
 
@@ -395,7 +438,17 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
       candidateLines.sort((a, b) => a.box.top.compareTo(b.box.top));
 
       // 2. Group candidate lines into cohesive visual clusters (signs / paragraphs)
-      final List<List<({String id, String text, Rect box, Color bgColor, Color fgColor})>> clusters = [];
+      final List<List<({
+        String id,
+        String text,
+        Rect box,
+        Color bgColor,
+        Color fgColor,
+        double angle,
+        Offset center,
+        double width,
+        double height,
+      })>> clusters = [];
       for (final item in candidateLines) {
         bool added = false;
         for (final cluster in clusters) {
@@ -470,6 +523,10 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
                     backgroundColor: it.bgColor,
                     textColor: it.fgColor,
                     sourceLangCode: detected,
+                    angle: it.angle,
+                    center: it.center,
+                    width: it.width,
+                    height: it.height,
                   ),
                 );
               }
@@ -503,6 +560,10 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
                     backgroundColor: it.bgColor,
                     textColor: it.fgColor,
                     sourceLangCode: detected,
+                    angle: it.angle,
+                    center: it.center,
+                    width: it.width,
+                    height: it.height,
                   ),
                 );
               }
@@ -534,6 +595,10 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
                 backgroundColor: it.bgColor,
                 textColor: it.fgColor,
                 sourceLangCode: _sourceLang.code,
+                angle: it.angle,
+                center: it.center,
+                width: it.width,
+                height: it.height,
               );
             }).toList();
 
@@ -1304,16 +1369,10 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
                 // 2. Exact Overlays rendered dynamically in identical coordinate space
                 if (!_showOriginal)
                   ..._lensLineItems.map((item) {
-                    final rect = item.boundingBox;
-                    final double left = rect.left * scale;
-                    final double top = rect.top * scale;
-                    final double width = rect.width * scale;
-                    final double height = rect.height * scale;
-
                     if (_activeMode == CameraSolutionMode.googleLensAR) {
-                      return _buildGoogleLensOverlay(item, left, top, width, height);
+                      return _buildGoogleLensOverlay(item, scale);
                     } else {
-                      return _buildInteractiveFocusOverlay(item, left, top, width, height);
+                      return _buildInteractiveFocusOverlay(item, scale);
                     }
                   }),
               ],
@@ -1325,24 +1384,74 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
   }
 
   /// Solution 1: Google Lens AR 1:1 In-Place Replacement
-  /// - Exact position: directly above the old text with 1px bleed to erase old letters completely
-  /// - Exact size: text font size is proportional to the line height (height * 0.78)
+  /// - Exact position & rotation: centered and oriented along the text baseline angle
+  /// - Full typographic bleed: expands 24% vertically and 28% horizontally to erase all ascenders, descenders, and accents
   /// - Seamless background: fills with sampled background color, NO drop shadows, NO sticker chips
   Widget _buildGoogleLensOverlay(
     OcrTranslatedItem item,
-    double left,
-    double top,
-    double width,
-    double height,
+    double scale,
   ) {
-    final double targetFontSize = height * 0.78;
+    final double centerX = item.center.dx * scale;
+    final double centerY = item.center.dy * scale;
+
+    final double rawW = item.width * scale;
+    final double rawH = item.height * scale;
+
+    // Generous typographic bleed:
+    // ML Kit's raw bounding box only wraps tight ink, cutting off ascenders (t, d, b, l),
+    // descenders (g, p, q, y), and accents (é, à, è).
+    // Expanding by 24% vertically and 28% horizontally ensures 100% complete coverage of the original text!
+    final double verticalBleed = math.max(5.0, rawH * 0.24);
+    final double horizontalBleed = math.max(6.0, rawH * 0.28);
+
+    final double boxWidth = rawW + (horizontalBleed * 2.0);
+    final double boxHeight = rawH + (verticalBleed * 2.0);
+
+    final double targetFontSize = rawH * 0.84;
     final bool isRtl = RegExp(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]').hasMatch(item.translatedText);
 
+    Widget boxContent = Container(
+      width: boxWidth,
+      height: boxHeight,
+      alignment: Alignment.center,
+      padding: EdgeInsets.symmetric(horizontal: horizontalBleed * 0.4),
+      decoration: BoxDecoration(
+        color: item.backgroundColor,
+        borderRadius: BorderRadius.circular(3),
+      ),
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.center,
+        child: Text(
+          item.translatedText,
+          maxLines: 1,
+          textAlign: TextAlign.center,
+          textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
+          style: TextStyle(
+            color: item.textColor,
+            fontSize: targetFontSize,
+            fontWeight: FontWeight.w600,
+            height: 1.1,
+            letterSpacing: isRtl ? 0 : -0.2,
+          ),
+        ),
+      ),
+    );
+
+    // If text is tilted (e.g. angled camera shot of monitor/paper), rotate the overlay to match exactly!
+    if (item.angle.abs() > 0.015) {
+      boxContent = Transform.rotate(
+        angle: item.angle,
+        alignment: Alignment.center,
+        child: boxContent,
+      );
+    }
+
     return Positioned(
-      left: left - 1,
-      top: top - 1,
-      width: width + 2,
-      height: height + 2,
+      left: centerX - (boxWidth / 2.0),
+      top: centerY - (boxHeight / 2.0),
+      width: boxWidth,
+      height: boxHeight,
       child: GestureDetector(
         onTap: () {
           TranslationService.instance.speak(item.translatedText, _targetLang.speechCode);
@@ -1353,33 +1462,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
             ),
           );
         },
-        child: Container(
-          width: width + 2,
-          height: height + 2,
-          alignment: Alignment.center,
-          padding: const EdgeInsets.symmetric(horizontal: 2),
-          decoration: BoxDecoration(
-            color: item.backgroundColor,
-            borderRadius: BorderRadius.circular(2),
-          ),
-          child: FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.center,
-            child: Text(
-              item.translatedText,
-              maxLines: 1,
-              textAlign: TextAlign.center,
-              textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
-              style: TextStyle(
-                color: item.textColor,
-                fontSize: targetFontSize,
-                fontWeight: FontWeight.w600,
-                height: 1.05,
-                letterSpacing: isRtl ? 0 : -0.2,
-              ),
-            ),
-          ),
-        ),
+        child: boxContent,
       ),
     );
   }
@@ -1387,47 +1470,62 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
   /// Solution 2: Interactive Focus Box with glowing outline
   Widget _buildInteractiveFocusOverlay(
     OcrTranslatedItem item,
-    double left,
-    double top,
-    double width,
-    double height,
+    double scale,
   ) {
+    final double centerX = item.center.dx * scale;
+    final double centerY = item.center.dy * scale;
+
+    final double boxWidth = item.width * scale + 8.0;
+    final double boxHeight = item.height * scale + 6.0;
+
+    Widget focusBox = Container(
+      width: boxWidth,
+      height: boxHeight,
+      decoration: BoxDecoration(
+        color: AppColors.primary.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: const Color(0xFF38BDF8), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF38BDF8).withValues(alpha: 0.3),
+            blurRadius: 4,
+          ),
+        ],
+      ),
+      child: Stack(
+        children: [
+          Positioned(
+            right: 2,
+            top: 2,
+            child: Container(
+              padding: const EdgeInsets.all(2),
+              decoration: const BoxDecoration(
+                color: Color(0xFF38BDF8),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(CupertinoIcons.text_cursor, size: 7, color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (item.angle.abs() > 0.015) {
+      focusBox = Transform.rotate(
+        angle: item.angle,
+        alignment: Alignment.center,
+        child: focusBox,
+      );
+    }
+
     return Positioned(
-      left: left,
-      top: top,
-      width: width,
-      height: height,
+      left: centerX - (boxWidth / 2.0),
+      top: centerY - (boxHeight / 2.0),
+      width: boxWidth,
+      height: boxHeight,
       child: GestureDetector(
         onTap: () => _showDetailBottomSheet(context, item),
-        child: Container(
-          decoration: BoxDecoration(
-            color: AppColors.primary.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: const Color(0xFF38BDF8), width: 1.5),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFF38BDF8).withValues(alpha: 0.3),
-                blurRadius: 4,
-              ),
-            ],
-          ),
-          child: Stack(
-            children: [
-              Positioned(
-                right: 2,
-                top: 2,
-                child: Container(
-                  padding: const EdgeInsets.all(2),
-                  decoration: const BoxDecoration(
-                    color: Color(0xFF38BDF8),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(CupertinoIcons.text_cursor, size: 7, color: Colors.white),
-                ),
-              ),
-            ],
-          ),
-        ),
+        child: focusBox,
       ),
     );
   }

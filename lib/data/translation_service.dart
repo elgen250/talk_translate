@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart' show ByteData, debugPrint, defaultTargetPlatform, kIsWeb, TargetPlatform, Uint8List;
 import 'package:google_mlkit_translation/google_mlkit_translation.dart';
@@ -20,8 +21,15 @@ import 'neural_tts_service.dart';
 class RecognizedLineData {
   final String text;
   final ui.Rect boundingBox;
+  final List<ui.Offset>? cornerPoints;
+  final double angle;
 
-  const RecognizedLineData({required this.text, required this.boundingBox});
+  const RecognizedLineData({
+    required this.text,
+    required this.boundingBox,
+    this.cornerPoints,
+    this.angle = 0.0,
+  });
 }
 
 class TranslationService {
@@ -64,7 +72,17 @@ class TranslationService {
             for (final line in block.lines) {
               final t = line.text.trim();
               if (t.isNotEmpty) {
-                mlKitLines.add(RecognizedLineData(text: t, boundingBox: line.boundingBox));
+                double calculatedAngle = 0.0;
+                final pts = line.cornerPoints.map((p) => ui.Offset(p.x.toDouble(), p.y.toDouble())).toList();
+                if (pts.length >= 2) {
+                  calculatedAngle = math.atan2(pts[1].dy - pts[0].dy, pts[1].dx - pts[0].dx);
+                }
+                mlKitLines.add(RecognizedLineData(
+                  text: t,
+                  boundingBox: line.boundingBox,
+                  cornerPoints: pts,
+                  angle: calculatedAngle,
+                ));
               }
             }
           }
