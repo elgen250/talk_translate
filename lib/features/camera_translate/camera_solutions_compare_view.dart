@@ -6,7 +6,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -146,7 +145,6 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
     ];
 
     setState(() {
-      _detectedCameraLang = supportedLanguages[2]; // French
       _lensLineItems = sampleItems;
       _mergedItems = sampleItems;
     });
@@ -157,13 +155,13 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
     final clean = text.trim();
     if (clean.isEmpty) return true;
 
-    // Filter pure numbers or long dates (e.g. 80404738, 2026/05/3)
+    // Filter pure long numbers or serials (e.g. 80404738)
     final numClean = clean.replaceAll(RegExp(r'[\/\-\:\.\s,\$€£%#]'), '');
-    if (double.tryParse(numClean) != null && numClean.length > 3) return true;
+    if (double.tryParse(numClean) != null && numClean.length > 5) return true;
 
     // Filter isolated single characters unless allowed valid words
     if (clean.length == 1) {
-      const allowedSingleChars = {'a', 'i', 'y', 'à', 'و', '&', '+'};
+      const allowedSingleChars = {'a', 'i', 'y', 'à', 'و', '&', '+', 'c'};
       if (!allowedSingleChars.contains(clean.toLowerCase())) return true;
     }
 
@@ -172,7 +170,6 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
     const keyboardKeys = {
       'gif', 'esc', 'tab', 'caps', 'shift', 'ctrl', 'alt', 'fn', 'enter',
       'del', 'backspace', 'home', 'end', 'pgup', 'pgdn', 'prtscn',
-      'df', 'hj k', 'gh', 'asdf', 'qwerty', 'zxcv', 'une s',
     };
     if (keyboardKeys.contains(lower)) return true;
 
@@ -245,25 +242,19 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
 
     if (image == null) return;
 
+    // Reset old overlays and detected language immediately so previous image data is never stuck
     setState(() {
       _isProcessing = true;
       _lensLineItems.clear();
       _mergedItems.clear();
+      if (_sourceLang.isAuto) {
+        _detectedCameraLang = null;
+      }
     });
 
     try {
       final bytes = await image.readAsBytes();
       final uiImage = await _decodeImage(bytes);
-
-      if (kIsWeb) {
-        setState(() {
-          _imageBytes = bytes;
-          _decodedImage = uiImage;
-          _isProcessing = false;
-        });
-        _processWebFallbackText();
-        return;
-      }
 
       // Extract raw RGBA bytes for pixel-level background color sampling
       ByteData? rawRgba;
@@ -273,189 +264,235 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         debugPrint('toByteData error: $e');
       }
 
-      // Native Mobile OCR using Google ML Kit
-      final inputImage = InputImage.fromFilePath(image.path);
-      final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
+      // Universal Cross-Platform OCR (Mobile on-device ML Kit + Web/Desktop Cloud OCR)
+      final recognizedLines = await TranslationService.instance.recognizeLinesFromImage(
+        imageFile: image,
+        bytes: bytes,
+      );
 
-      try {
-        final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
-
-        // 1. Google Lens Exact Line Candidates
-        final List<({
-          String id,
-          String text,
-          Rect box,
-          Color bgColor,
-          Color fgColor,
-        })> candidateLines = [];
-
-        // 2. Merged Paragraph Blocks (for alternative mode)
-        final List<({
-          String id,
-          String text,
-          Rect box,
-          Color bgColor,
-          Color fgColor,
-        })> candidateBlocks = [];
-
-        int lineCounter = 0;
-
-        for (final block in recognizedText.blocks) {
-          final List<TextLine> validBlockLines = [];
-
-          for (final line in block.lines) {
-            lineCounter++;
-            final text = line.text.trim();
-            if (text.isEmpty || _isNoiseOrKeyboardArtifact(text)) continue;
-
-            final Color bg = _sampleBackgroundColor(uiImage, rawRgba, line.boundingBox);
-            final Color fg = _getTextColorForBackground(bg);
-
-            candidateLines.add((
-              id: 'line_$lineCounter',
-              text: text,
-              box: line.boundingBox,
-              bgColor: bg,
-              fgColor: fg,
-            ));
-
-            validBlockLines.add(line);
-          }
-
-          if (validBlockLines.isNotEmpty) {
-            double minL = double.infinity, minT = double.infinity;
-            double maxR = -double.infinity, maxB = -double.infinity;
-
-            final words = <String>[];
-            for (final vl in validBlockLines) {
-              words.add(vl.text.trim());
-              if (vl.boundingBox.left < minL) minL = vl.boundingBox.left;
-              if (vl.boundingBox.top < minT) minT = vl.boundingBox.top;
-              if (vl.boundingBox.right > maxR) maxR = vl.boundingBox.right;
-              if (vl.boundingBox.bottom > maxB) maxB = vl.boundingBox.bottom;
-            }
-
-            final blockRect = Rect.fromLTRB(minL, minT, maxR, maxB);
-            final Color blockBg = _sampleBackgroundColor(uiImage, rawRgba, blockRect);
-            final Color blockFg = _getTextColorForBackground(blockBg);
-
-            candidateBlocks.add((
-              id: 'block_${candidateBlocks.length + 1}',
-              text: words.join('\n'),
-              box: blockRect,
-              bgColor: blockBg,
-              fgColor: blockFg,
-            ));
-          }
-        }
-
-        // Detect language if source is Auto Detect
-        if (_sourceLang.isAuto && candidateLines.isNotEmpty) {
-          final sampleText = candidateLines.take(5).map((l) => l.text).join(' ');
-          final detectedCode = await TranslationService.instance.identifyLanguage(sampleText);
-          if (detectedCode != null) {
-            final resolved = getLanguageByCode(detectedCode);
-            if (resolved != null) {
-              _detectedCameraLang = resolved;
-            }
-          }
-        }
-        final effectiveFromCode = _detectedCameraLang?.code ?? (_sourceLang.isAuto ? 'auto' : _sourceLang.code);
-
-        // 3. Translate Exact Lines in parallel batches of 10
-        final List<OcrTranslatedItem> tempLensLines = [];
-        const batchSize = 10;
-        for (var i = 0; i < candidateLines.length; i += batchSize) {
-          final end = (i + batchSize < candidateLines.length) ? i + batchSize : candidateLines.length;
-          final batch = candidateLines.sublist(i, end);
-
-          final results = await Future.wait(
-            batch.map((item) async {
-              try {
-                final translated = await TranslationService.instance.translate(
-                  text: item.text,
-                  fromCode: effectiveFromCode,
-                  toCode: _targetLang.code,
-                  mode: 'camera',
-                );
-                return OcrTranslatedItem(
-                  id: item.id,
-                  originalText: item.text,
-                  translatedText: translated.isNotEmpty ? translated : item.text,
-                  boundingBox: item.box,
-                  backgroundColor: item.bgColor,
-                  textColor: item.fgColor,
-                );
-              } catch (_) {
-                return OcrTranslatedItem(
-                  id: item.id,
-                  originalText: item.text,
-                  translatedText: item.text,
-                  boundingBox: item.box,
-                  backgroundColor: item.bgColor,
-                  textColor: item.fgColor,
-                );
-              }
-            }),
-          );
-          tempLensLines.addAll(results);
-        }
-
-        // 4. Translate Merged Blocks for alternative mode
-        final List<OcrTranslatedItem> tempBlocks = [];
-        for (var i = 0; i < candidateBlocks.length; i += batchSize) {
-          final end = (i + batchSize < candidateBlocks.length) ? i + batchSize : candidateBlocks.length;
-          final batch = candidateBlocks.sublist(i, end);
-
-          final results = await Future.wait(
-            batch.map((item) async {
-              try {
-                final translated = await TranslationService.instance.translate(
-                  text: item.text,
-                  fromCode: effectiveFromCode,
-                  toCode: _targetLang.code,
-                  mode: 'camera',
-                );
-                return OcrTranslatedItem(
-                  id: item.id,
-                  originalText: item.text,
-                  translatedText: translated.isNotEmpty ? translated : item.text,
-                  boundingBox: item.box,
-                  backgroundColor: item.bgColor,
-                  textColor: item.fgColor,
-                );
-              } catch (_) {
-                return OcrTranslatedItem(
-                  id: item.id,
-                  originalText: item.text,
-                  translatedText: item.text,
-                  boundingBox: item.box,
-                  backgroundColor: item.bgColor,
-                  textColor: item.fgColor,
-                );
-              }
-            }),
-          );
-          tempBlocks.addAll(results);
-        }
-
+      if (recognizedLines.isEmpty) {
         if (!mounted) return;
         setState(() {
           _imageBytes = bytes;
           _decodedImage = uiImage;
-          _lensLineItems = tempLensLines;
-          _mergedItems = tempBlocks;
+          _lensLineItems = [];
+          _mergedItems = [];
           _isProcessing = false;
         });
-      } finally {
-        await textRecognizer.close();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('لم يتم العثور على أي نص في هذه الصورة. يرجى تجربة صورة أوضح.'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+        return;
       }
+
+      // 1. Google Lens Exact Line Candidates
+      final List<({
+        String id,
+        String text,
+        Rect box,
+        Color bgColor,
+        Color fgColor,
+      })> candidateLines = [];
+
+      int lineCounter = 0;
+      for (final line in recognizedLines) {
+        final text = line.text.trim();
+        if (text.isEmpty || _isNoiseOrKeyboardArtifact(text)) continue;
+        lineCounter++;
+
+        final Color bg = _sampleBackgroundColor(uiImage, rawRgba, line.boundingBox);
+        final Color fg = _getTextColorForBackground(bg);
+
+        candidateLines.add((
+          id: 'line_$lineCounter',
+          text: text,
+          box: line.boundingBox,
+          bgColor: bg,
+          fgColor: fg,
+        ));
+      }
+
+      if (candidateLines.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _imageBytes = bytes;
+          _decodedImage = uiImage;
+          _lensLineItems = [];
+          _mergedItems = [];
+          _isProcessing = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('النصوص المكتشفة غير واضحة أو مجرد رموز. يرجى تجربة صورة أوضح.'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+
+      // 2. Merged Paragraph Blocks (for alternative mode)
+      final List<({
+        String id,
+        String text,
+        Rect box,
+        Color bgColor,
+        Color fgColor,
+      })> candidateBlocks = [];
+
+      // Group candidate lines that are vertically adjacent
+      final List<List<({String id, String text, Rect box, Color bgColor, Color fgColor})>> clusters = [];
+      for (final item in candidateLines) {
+        bool added = false;
+        for (final cluster in clusters) {
+          final last = cluster.last;
+          final double vertGap = (item.box.top - last.box.bottom).abs();
+          final double avgHeight = (item.box.height + last.box.height) / 2.0;
+          if (vertGap <= avgHeight * 1.5) {
+            cluster.add(item);
+            added = true;
+            break;
+          }
+        }
+        if (!added) {
+          clusters.add([item]);
+        }
+      }
+
+      int blockCounter = 0;
+      for (final cluster in clusters) {
+        blockCounter++;
+        double minL = double.infinity, minT = double.infinity;
+        double maxR = -double.infinity, maxB = -double.infinity;
+        final words = <String>[];
+
+        for (final it in cluster) {
+          words.add(it.text);
+          if (it.box.left < minL) minL = it.box.left;
+          if (it.box.top < minT) minT = it.box.top;
+          if (it.box.right > maxR) maxR = it.box.right;
+          if (it.box.bottom > maxB) maxB = it.box.bottom;
+        }
+
+        final blockRect = Rect.fromLTRB(minL, minT, maxR, maxB);
+        final Color blockBg = _sampleBackgroundColor(uiImage, rawRgba, blockRect);
+        final Color blockFg = _getTextColorForBackground(blockBg);
+
+        candidateBlocks.add((
+          id: 'block_$blockCounter',
+          text: words.join('\n'),
+          box: blockRect,
+          bgColor: blockBg,
+          fgColor: blockFg,
+        ));
+      }
+
+      // 3. Detect language if source is Auto Detect
+      if (_sourceLang.isAuto && candidateLines.isNotEmpty) {
+        final sampleText = candidateLines.take(5).map((l) => l.text).join(' ');
+        final detectedCode = await TranslationService.instance.identifyLanguage(sampleText);
+        if (detectedCode != null) {
+          final resolved = getLanguageByCode(detectedCode);
+          if (resolved != null) {
+            _detectedCameraLang = resolved;
+          }
+        }
+      }
+      final effectiveFromCode = _detectedCameraLang?.code ?? (_sourceLang.isAuto ? 'auto' : _sourceLang.code);
+
+      // 4. Translate Exact Lines in parallel batches of 10
+      final List<OcrTranslatedItem> tempLensLines = [];
+      const batchSize = 10;
+      for (var i = 0; i < candidateLines.length; i += batchSize) {
+        final end = (i + batchSize < candidateLines.length) ? i + batchSize : candidateLines.length;
+        final batch = candidateLines.sublist(i, end);
+
+        final results = await Future.wait(
+          batch.map((item) async {
+            try {
+              final translated = await TranslationService.instance.translate(
+                text: item.text,
+                fromCode: effectiveFromCode,
+                toCode: _targetLang.code,
+                mode: 'camera',
+              );
+              return OcrTranslatedItem(
+                id: item.id,
+                originalText: item.text,
+                translatedText: translated.isNotEmpty ? translated : item.text,
+                boundingBox: item.box,
+                backgroundColor: item.bgColor,
+                textColor: item.fgColor,
+              );
+            } catch (_) {
+              return OcrTranslatedItem(
+                id: item.id,
+                originalText: item.text,
+                translatedText: item.text,
+                boundingBox: item.box,
+                backgroundColor: item.bgColor,
+                textColor: item.fgColor,
+              );
+            }
+          }),
+        );
+        tempLensLines.addAll(results);
+      }
+
+      // 5. Translate Merged Blocks for alternative mode
+      final List<OcrTranslatedItem> tempBlocks = [];
+      for (var i = 0; i < candidateBlocks.length; i += batchSize) {
+        final end = (i + batchSize < candidateBlocks.length) ? i + batchSize : candidateBlocks.length;
+        final batch = candidateBlocks.sublist(i, end);
+
+        final results = await Future.wait(
+          batch.map((item) async {
+            try {
+              final translated = await TranslationService.instance.translate(
+                text: item.text,
+                fromCode: effectiveFromCode,
+                toCode: _targetLang.code,
+                mode: 'camera',
+              );
+              return OcrTranslatedItem(
+                id: item.id,
+                originalText: item.text,
+                translatedText: translated.isNotEmpty ? translated : item.text,
+                boundingBox: item.box,
+                backgroundColor: item.bgColor,
+                textColor: item.fgColor,
+              );
+            } catch (_) {
+              return OcrTranslatedItem(
+                id: item.id,
+                originalText: item.text,
+                translatedText: item.text,
+                boundingBox: item.box,
+                backgroundColor: item.bgColor,
+                textColor: item.fgColor,
+              );
+            }
+          }),
+        );
+        tempBlocks.addAll(results);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _imageBytes = bytes;
+        _decodedImage = uiImage;
+        _lensLineItems = tempLensLines;
+        _mergedItems = tempBlocks;
+        _isProcessing = false;
+      });
     } catch (e) {
       debugPrint('OCR Error: $e');
       if (!mounted) return;
       setState(() => _isProcessing = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to process image: $e')),
+        SnackBar(content: Text('حدث خطأ أثناء معالجة الصورة: $e')),
       );
     }
   }
@@ -466,28 +503,6 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
       completer.complete(img);
     });
     return completer.future;
-  }
-
-  void _processWebFallbackText() async {
-    const sampleText = "Café au lait - 4.50€\nSortie de secours\nRefresh Data";
-    final translated = await TranslationService.instance.translate(
-      text: sampleText,
-      fromCode: _sourceLang.code,
-      toCode: _targetLang.code,
-      mode: 'camera',
-    );
-    final fallbackItem = OcrTranslatedItem(
-      id: 'web_1',
-      originalText: sampleText,
-      translatedText: translated,
-      boundingBox: const Rect.fromLTWH(40, 100, 300, 90),
-      backgroundColor: const Color(0xFFF1F5F9),
-      textColor: const Color(0xFF0F172A),
-    );
-    setState(() {
-      _lensLineItems = [fallbackItem];
-      _mergedItems = [fallbackItem];
-    });
   }
 
   /// High-Resolution Image Export & Share

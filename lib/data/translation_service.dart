@@ -1,8 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
-import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
+import 'dart:ui' show Rect;
+import 'package:flutter/foundation.dart' show debugPrint, defaultTargetPlatform, kIsWeb, TargetPlatform, Uint8List;
 import 'package:google_mlkit_translation/google_mlkit_translation.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:google_mlkit_language_id/google_mlkit_language_id.dart';
+import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:translator/translator.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -13,11 +16,128 @@ import '../core/models/translation_record.dart';
 import 'app_database.dart';
 import 'neural_tts_service.dart';
 
+class RecognizedLineData {
+  final String text;
+  final Rect boundingBox;
+
+  const RecognizedLineData({required this.text, required this.boundingBox});
+}
+
 class TranslationService {
   static final TranslationService instance = TranslationService._internal();
   TranslationService._internal();
 
   String? lastCapturedImagePath;
+
+  // Universal OCR line recognition across Native Mobile, Web, and Desktop
+  Future<List<RecognizedLineData>> recognizeLinesFromImage({
+    required XFile imageFile,
+    required Uint8List bytes,
+  }) async {
+    // 1. Native Mobile: On-Device Google ML Kit Text Recognition
+    if (!kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS)) {
+      try {
+        final inputImage = InputImage.fromFilePath(imageFile.path);
+        final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
+        try {
+          final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
+          final List<RecognizedLineData> lines = [];
+          for (final block in recognizedText.blocks) {
+            for (final line in block.lines) {
+              final t = line.text.trim();
+              if (t.isNotEmpty) {
+                lines.add(RecognizedLineData(text: t, boundingBox: line.boundingBox));
+              }
+            }
+          }
+          if (lines.isNotEmpty) {
+            return lines;
+          }
+        } finally {
+          await textRecognizer.close();
+        }
+      } catch (e) {
+        debugPrint('Native ML Kit OCR error, attempting cloud fallback: $e');
+      }
+    }
+
+    // 2. Web, Desktop, and Mobile Fallback: Cloud OCR Engine 2
+    try {
+      final base64Image = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+      final response = await http.post(
+        Uri.parse('https://api.ocr.space/parse/image'),
+        headers: {'apikey': 'helloworld'},
+        body: {
+          'base64Image': base64Image,
+          'isOverlayRequired': 'true',
+          'detectOrientation': 'true',
+          'scale': 'true',
+          'OCREngine': '2',
+        },
+      ).timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['OCRExitCode'] == 1) {
+          final results = data['ParsedResults'] as List?;
+          if (results != null && results.isNotEmpty) {
+            final List<RecognizedLineData> lines = [];
+            for (final res in results) {
+              final overlay = res['TextOverlay'];
+              if (overlay != null) {
+                final ocrLines = overlay['Lines'] as List?;
+                if (ocrLines != null) {
+                  for (final l in ocrLines) {
+                    final lineText = (l['LineText'] as String?)?.trim() ?? '';
+                    final words = l['Words'] as List?;
+                    if (lineText.isEmpty || words == null || words.isEmpty) continue;
+
+                    num minL = double.infinity, minT = double.infinity;
+                    num maxR = -double.infinity, maxB = -double.infinity;
+
+                    for (final w in words) {
+                      final left = (w['Left'] as num?) ?? 0;
+                      final top = (w['Top'] as num?) ?? 0;
+                      final width = (w['Width'] as num?) ?? 0;
+                      final height = (w['Height'] as num?) ?? 0;
+
+                      if (left < minL) minL = left;
+                      if (top < minT) minT = top;
+                      if (left + width > maxR) maxR = left + width;
+                      if (top + height > maxB) maxB = top + height;
+                    }
+
+                    if (minL < maxR && minT < maxB) {
+                      lines.add(
+                        RecognizedLineData(
+                          text: lineText,
+                          boundingBox: Rect.fromLTRB(
+                            minL.toDouble(),
+                            minT.toDouble(),
+                            maxR.toDouble(),
+                            maxB.toDouble(),
+                          ),
+                        ),
+                      );
+                    }
+                  }
+                }
+              }
+            }
+            if (lines.isNotEmpty) {
+              return lines;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Cloud OCR error: $e');
+    }
+
+    return const <RecognizedLineData>[];
+  }
 
   // فتح الكاميرا أو المعرض واستخراج النص بالذكاء الاصطناعي (AI OCR)
   Future<String?> captureAndRecognizeText({bool fromCamera = true}) async {
@@ -36,28 +156,15 @@ class TranslationService {
 
       lastCapturedImagePath = image.path;
 
-      if (kIsWeb) {
-        return {
-          'text': 'Captured Image: ${image.name}',
-          'blocks': <TextBlock>[],
-          'imagePath': image.path,
-        };
-      }
+      final bytes = await image.readAsBytes();
+      final lines = await recognizeLinesFromImage(imageFile: image, bytes: bytes);
 
-      final inputImage = InputImage.fromFilePath(image.path);
-      final textRecognizer =
-          TextRecognizer(script: TextRecognitionScript.latin);
-      try {
-        final RecognizedText recognizedText =
-            await textRecognizer.processImage(inputImage);
-        return {
-          'text': recognizedText.text.trim(),
-          'blocks': recognizedText.blocks,
-          'imagePath': image.path,
-        };
-      } finally {
-        await textRecognizer.close();
-      }
+      return {
+        'text': lines.map((l) => l.text).join('\n'),
+        'blocks': <TextBlock>[],
+        'lines': lines,
+        'imagePath': image.path,
+      };
     } catch (e) {
       debugPrint('OCR capture/recognition error: $e');
       rethrow;
