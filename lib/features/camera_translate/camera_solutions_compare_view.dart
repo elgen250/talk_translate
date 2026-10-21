@@ -278,6 +278,9 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
   Future<void> _pickAndProcessImage(bool useCamera) async {
     final XFile? image = await _picker.pickImage(
       source: useCamera ? ImageSource.camera : ImageSource.gallery,
+      maxWidth: 2048,
+      maxHeight: 2048,
+      imageQuality: 92,
     );
 
     if (image == null) return;
@@ -309,6 +312,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
       final recognizedLines = await TranslationService.instance.recognizeLinesFromImage(
         imageFile: image,
         bytes: bytes,
+        sourceLangCode: _sourceLang.isAuto ? null : _sourceLang.code,
       );
 
       if (recognizedLines.isEmpty) {

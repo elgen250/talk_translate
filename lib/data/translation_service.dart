@@ -33,16 +33,30 @@ class TranslationService {
   Future<List<RecognizedLineData>> recognizeLinesFromImage({
     required XFile imageFile,
     required Uint8List bytes,
+    String? sourceLangCode,
   }) async {
     final List<RecognizedLineData> mlKitLines = [];
 
-    // 1. Native Mobile: On-Device Google ML Kit Text Recognition
+    // 1. Native Mobile: On-Device Google ML Kit Text Recognition (Fast, accurate, offline-capable)
     if (!kIsWeb &&
         (defaultTargetPlatform == TargetPlatform.android ||
             defaultTargetPlatform == TargetPlatform.iOS)) {
       try {
         final inputImage = InputImage.fromFilePath(imageFile.path);
-        final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
+
+        TextRecognitionScript script = TextRecognitionScript.latin;
+        final lang = (sourceLangCode ?? '').toLowerCase();
+        if (lang == 'zh') {
+          script = TextRecognitionScript.chinese;
+        } else if (lang == 'ja') {
+          script = TextRecognitionScript.japanese;
+        } else if (lang == 'ko') {
+          script = TextRecognitionScript.korean;
+        } else if (lang == 'hi') {
+          script = TextRecognitionScript.devanagiri;
+        }
+
+        final textRecognizer = TextRecognizer(script: script);
         try {
           final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
           for (final block in recognizedText.blocks) {
@@ -61,13 +75,18 @@ class TranslationService {
       }
     }
 
-    final bool isOnline = await hasInternetConnection();
-    // If device is offline or native ML Kit found a very comprehensive scan (>= 25 lines), return it directly
-    if (!isOnline || mlKitLines.length >= 25) {
-      if (mlKitLines.isNotEmpty) return mlKitLines;
+    // Direct Return: On iOS & Android, if native Google ML Kit recognized lines, ALWAYS return them directly!
+    // Never discard high-precision on-device ML Kit results for an external demo API.
+    if (mlKitLines.isNotEmpty) {
+      return mlKitLines;
     }
 
-    // 2. Web, Desktop, and Cloud OCR Engine 2 (scale=false for exact 1:1 coordinates)
+    final bool isOnline = await hasInternetConnection();
+    if (!isOnline) {
+      return mlKitLines;
+    }
+
+    // 2. Web, Desktop, or Mobile Fallback: Cloud OCR Engine 2 (scale=false for exact 1:1 coordinates)
     try {
       final String mime = (bytes.length > 4 && bytes[0] == 0x89 && bytes[1] == 0x50)
           ? 'image/png'
@@ -133,7 +152,7 @@ class TranslationService {
                 }
               }
             }
-            if (cloudLines.length > mlKitLines.length) {
+            if (cloudLines.isNotEmpty) {
               return cloudLines;
             }
           }
@@ -157,6 +176,8 @@ class TranslationService {
     try {
       final XFile? image = await _picker.pickImage(
         source: fromCamera ? ImageSource.camera : ImageSource.gallery,
+        maxWidth: 2048,
+        maxHeight: 2048,
         imageQuality: 90,
       );
       if (image == null) return null;
