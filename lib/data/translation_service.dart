@@ -534,8 +534,13 @@ class TranslationService {
     }
   }
 
+  Function(dynamic)? onSpeechError;
+  Function(String)? onSpeechStatus;
+
   void resetSpeech() {
     _speechReady = false;
+    onSpeechError = null;
+    onSpeechStatus = null;
     try {
       _speech?.cancel();
     } catch (_) {}
@@ -546,6 +551,8 @@ class TranslationService {
     Function(dynamic)? onError,
     Function(String)? onStatus,
   }) async {
+    onSpeechError = onError;
+    onSpeechStatus = onStatus;
     try {
       if (_speech == null || !_speechReady) {
         _speech = stt.SpeechToText();
@@ -554,11 +561,11 @@ class TranslationService {
             debugPrint('Speech error: $err');
             final errMsg = err.toString().toLowerCase();
             debugPrint('Speech error handled safely: $errMsg');
-            onError?.call(err);
+            onSpeechError?.call(err);
           },
           onStatus: (status) {
             debugPrint('Speech status: $status');
-            onStatus?.call(status);
+            onSpeechStatus?.call(status);
           },
           debugLogging: false,
         );

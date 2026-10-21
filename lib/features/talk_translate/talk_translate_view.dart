@@ -84,6 +84,7 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
   @override
   void dispose() {
     _userRequestedStop = true;
+    _isRestartingStt = false;
     _connectivityTimer?.cancel();
     _liveDebounceTimer?.cancel();
     _restartSttTimer?.cancel();
@@ -293,6 +294,7 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
   // Tracking current continuous STT chunk
   String _currentSessionWords = '';
   String _speakerTwoCurrentSessionWords = '';
+  bool _isRestartingStt = false;
 
   void _commitCurrentSessionWords({required bool speakerTwo}) {
     if (speakerTwo) {
@@ -325,7 +327,10 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
           if (errStr.contains('error_no_match') ||
               errStr.contains('error_speech_timeout')) {
             _scheduleContinuousRestart(
-                speakerTwo: speakerTwo, reason: 'silence_timeout', delayMs: 150);
+                speakerTwo: speakerTwo, reason: 'silence_timeout', delayMs: 350);
+          } else if (errStr.contains('error_busy') || errStr.contains('error_client')) {
+            _scheduleContinuousRestart(
+                speakerTwo: speakerTwo, reason: 'busy_client_backoff', delayMs: 500);
           } else {
             _scheduleContinuousRestart(
                 speakerTwo: speakerTwo, reason: 'error: $err', delayMs: 400);
@@ -337,7 +342,7 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
           if (status == 'notListening' || status == 'done' || status == 'doneNoResult') {
             _commitCurrentSessionWords(speakerTwo: speakerTwo);
             _scheduleContinuousRestart(
-                speakerTwo: speakerTwo, reason: 'status: $status', delayMs: 150);
+                speakerTwo: speakerTwo, reason: 'status: $status', delayMs: 350);
           }
         },
       );
@@ -427,25 +432,30 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
   void _scheduleContinuousRestart({
     required bool speakerTwo,
     required String reason,
-    int delayMs = 200,
+    int delayMs = 350,
   }) {
     if (!mounted || _userRequestedStop) return;
     final stillActive = speakerTwo ? _isSpeakerTwoListening : _isListening;
     if (!stillActive) return;
 
+    // Prevent duplicate clashing timers from multiple done/error events
+    if (_isRestartingStt) return;
+    _isRestartingStt = true;
+
     _restartSttTimer?.cancel();
     _restartSttTimer = Timer(Duration(milliseconds: delayMs), () async {
+      _isRestartingStt = false;
       if (!mounted || _userRequestedStop) return;
       final active = speakerTwo ? _isSpeakerTwoListening : _isListening;
       if (!active) return;
 
-      // Ensure prior session is cleanly terminated on native Android so a new session can start immediately
-      try {
-        await TranslationService.instance.speech?.cancel();
-      } catch (_) {}
+      // If already listening natively, avoid clashing
+      if (TranslationService.instance.speech?.isListening == true) {
+        debugPrint('Continuous STT recognizer already active, skipping.');
+        return;
+      }
 
-      if (!mounted || _userRequestedStop) return;
-      debugPrint('Continuous STT restarting (trigger: $reason)...');
+      debugPrint('Continuous STT restarting cleanly (trigger: $reason)...');
       _startContinuousOnlineListen(speakerTwo: speakerTwo);
     });
   }
@@ -456,6 +466,7 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
 
     if (isCurrentlyListening) {
       _userRequestedStop = true;
+      _isRestartingStt = false;
       _restartSttTimer?.cancel();
 
       if (OfflineVoiceService.instance.isRecording) {
@@ -508,6 +519,7 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
 
     // Starting new listening session - reset user stop flag
     _userRequestedStop = false;
+    _isRestartingStt = false;
     _restartSttTimer?.cancel();
 
     // Auto-detect connectivity to switch between Online (Wi-Fi) and Local (Offline AI)
