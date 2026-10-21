@@ -317,36 +317,25 @@ class TranslationService {
     String effectiveFromCode = fromCode.toLowerCase();
     String detectedSource = fromCode;
 
-    // معالجة خيار Auto Detect التلقائي
-    if (effectiveFromCode == 'auto') {
-      final detected = await identifyLanguage(cleanText);
-      if (detected != null && detected.isNotEmpty) {
-        effectiveFromCode = detected;
-        detectedSource = detected;
-      } else {
-        effectiveFromCode = 'en';
-        detectedSource = 'en';
-      }
-    }
-
-    if (effectiveFromCode == toCode.toLowerCase()) {
-      return (text: cleanText, detectedSource: detectedSource);
-    }
-
     final forceOffline = AppDatabase.instance.forceOfflineMode;
     final bool isOnline = !forceOffline && await hasInternetConnection();
 
-    // 1. إذا توفر الإنترنت نستخدم الترجمة السحابية الذكية
+    // 1. إذا توفر الإنترنت نستخدم الترجمة السحابية الذكية مباشرة مع التعرف التلقائي
     if (isOnline) {
       try {
         final res = await _translator
             .translate(cleanText, from: fromCode == 'auto' ? 'auto' : effectiveFromCode, to: toCode)
-            .timeout(const Duration(milliseconds: 3200));
+            .timeout(const Duration(seconds: 8));
 
         if (res.text.isNotEmpty) {
           final actualSource = (res.sourceLanguage.code.isNotEmpty && res.sourceLanguage.code != 'und')
-              ? res.sourceLanguage.code
+              ? res.sourceLanguage.code.toLowerCase()
               : effectiveFromCode;
+
+          // إذا كانت اللغة المكتشفة هي نفسها لغة الهدف، نرجع النص كما هو
+          if (actualSource == toCode.toLowerCase()) {
+            return (text: cleanText, detectedSource: actualSource);
+          }
 
           AppDatabase.instance.saveRecord(
             TranslationRecord(
@@ -364,6 +353,22 @@ class TranslationService {
       } catch (e) {
         debugPrint('Online translation failed, falling back to local on-device: $e');
       }
+    }
+
+    // معالجة خيار Auto Detect التلقائي للأوفلاين فقط
+    if (effectiveFromCode == 'auto') {
+      final detected = await identifyLanguage(cleanText);
+      if (detected != null && detected.isNotEmpty) {
+        effectiveFromCode = detected;
+        detectedSource = detected;
+      } else {
+        effectiveFromCode = 'en';
+        detectedSource = 'en';
+      }
+    }
+
+    if (effectiveFromCode == toCode.toLowerCase()) {
+      return (text: cleanText, detectedSource: detectedSource);
     }
 
     // 2. إذا انقطع النت نستخدم محرك الذكاء الاصطناعي العصبي المحلي On-Device

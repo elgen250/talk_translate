@@ -1,7 +1,7 @@
 # PROJECT_CONTEXT.md
 > **Single Source of Truth & Architectural Index**
 > *Generated and maintained under the "Read-First, Update-Last" Protocol.*
-> *Last Codebase Synchronization:* 2026-10-20T18:59:00+03:00
+> *Last Codebase Synchronization:* 2026-10-21T16:00:00+03:00
 
 ---
 
@@ -422,11 +422,12 @@ talk_translate/
 ---
 
 ## 7. Latest Sync Changelog
-1. **2026-10-21:** Added real-time dynamic re-translation on language change (`_retranslateCurrentItems`) in `camera_solutions_compare_view.dart`, updating image overlays instantly when switching target language (e.g. English ➔ Arabic) or swapping languages without re-uploading the image, with full RTL text direction and right-alignment support for Arabic/Hebrew scripts.
-2. **2026-10-21:** Fixed Camera OCR image processing defect where Web testing and new image selection retained stale mock presets ('Coffee with milk'). Implemented universal cross-platform OCR in `TranslationService.recognizeLinesFromImage()` combining on-device Google ML Kit (Android/iOS) and Cloud OCR Engine 2 with coordinate mapping (Web/Desktop), immediate state purging on picking a new image, refined noise heuristics, and added `com.google.mlkit.vision.DEPENDENCIES` (ocr) meta-data in `AndroidManifest.xml`.
-3. **2026-10-21:** Integrated on-device neural language identification (`google_mlkit_language_id`) and bilingual auto-detection across Camera OCR and Talk Voice views, adding `autoDetectLanguage` option (`🌐 Auto Detect`) to `LanguageSelectorRow`, real-time speech language detection, and automatic translation routing.
-4. **2026-10-20:** Implemented true Google Lens AR 1:1 in-place text replacement in `camera_solutions_compare_view.dart`: exact coordinate alignment over original text, pixel-level surface background color sampling to erase old text, font sizing directly proportional to line height (`height * 0.78`), and zero-shadow seamless surface blending.
-5. **2026-10-20:** Created `camera_solutions_compare_view.dart` implementing multi-solution OCR comparison (Google Lens AR, Interactive Focus & Bottom Sheet, Document Reader List, and Merged Paragraphs) with dedicated toggle buttons for live real-device testing.
-6. **2026-10-20:** Optimized camera OCR translation loop to execute in asynchronous parallel batches (`Future.wait`) of 10 lines, preventing UI thread stalls and network timeouts during large document scans.
-7. **2026-10-20:** Upgraded `camera_translate_view.dart` to a professional Google Lens-style OCR engine with line-level extraction (`TextLine`), aspect-ratio bounding box alignment via `ui.decodeImageFromList`, `InteractiveViewer` zoom, and tap-to-speak.
+1. **2026-10-21:** Implemented multi-language auto-detection and cluster-based translation in `camera_solutions_compare_view.dart` and `translation_service.dart`. When a photo contains multiple languages (e.g. English and French street signs on the same image), each spatial sign cluster is translated with individual automatic language identification, eliminating whole-image language lock. Added `sourceLangCode` to `OcrTranslatedItem`, multi-language UI badge (e.g. `✨ Multi-Language: English 🇺🇸 & French 🇫🇷`), and preserved per-line detected languages during real-time target language switching and swap.
+2. **2026-10-21:** Added real-time dynamic re-translation on language change (`_retranslateCurrentItems`) in `camera_solutions_compare_view.dart`, updating image overlays instantly when switching target language (e.g. English ➔ Arabic) or swapping languages without re-uploading the image, with full RTL text direction and right-alignment support for Arabic/Hebrew scripts.
+3. **2026-10-21:** Fixed Camera OCR image processing defect where Web testing and new image selection retained stale mock presets ('Coffee with milk'). Implemented universal cross-platform OCR in `TranslationService.recognizeLinesFromImage()` combining on-device Google ML Kit (Android/iOS) and Cloud OCR Engine 2 with coordinate mapping (Web/Desktop), immediate state purging on picking a new image, refined noise heuristics, and added `com.google.mlkit.vision.DEPENDENCIES` (ocr) meta-data in `AndroidManifest.xml`.
+4. **2026-10-21:** Integrated on-device neural language identification (`google_mlkit_language_id`) and bilingual auto-detection across Camera OCR and Talk Voice views, adding `autoDetectLanguage` option (`🌐 Auto Detect`) to `LanguageSelectorRow`, real-time speech language detection, and automatic translation routing.
+5. **2026-10-20:** Implemented true Google Lens AR 1:1 in-place text replacement in `camera_solutions_compare_view.dart`: exact coordinate alignment over original text, pixel-level surface background color sampling to erase old text, font sizing directly proportional to line height (`height * 0.78`), and zero-shadow seamless surface blending.
+6. **2026-10-20:** Created `camera_solutions_compare_view.dart` implementing multi-solution OCR comparison (Google Lens AR, Interactive Focus & Bottom Sheet, Document Reader List, and Merged Paragraphs) with dedicated toggle buttons for live real-device testing.
+7. **2026-10-20:** Optimized camera OCR translation loop to execute in asynchronous parallel batches (`Future.wait`) of 10 lines, preventing UI thread stalls and network timeouts during large document scans.
+8. **2026-10-20:** Upgraded `camera_translate_view.dart` to a professional Google Lens-style OCR engine with line-level extraction (`TextLine`), aspect-ratio bounding box alignment via `ui.decodeImageFromList`, `InteractiveViewer` zoom, and tap-to-speak.
 

@@ -26,6 +26,7 @@ class OcrTranslatedItem {
   final Color backgroundColor;
   final Color textColor;
   final bool isNoise;
+  final String? sourceLangCode;
 
   OcrTranslatedItem({
     required this.id,
@@ -35,6 +36,7 @@ class OcrTranslatedItem {
     this.backgroundColor = const Color(0xFFF8FAFC),
     this.textColor = const Color(0xFF0F172A),
     this.isNoise = false,
+    this.sourceLangCode,
   });
 
   OcrTranslatedItem copyWith({
@@ -44,6 +46,7 @@ class OcrTranslatedItem {
     Color? backgroundColor,
     Color? textColor,
     bool? isNoise,
+    String? sourceLangCode,
   }) {
     return OcrTranslatedItem(
       id: id,
@@ -53,6 +56,7 @@ class OcrTranslatedItem {
       backgroundColor: backgroundColor ?? this.backgroundColor,
       textColor: textColor ?? this.textColor,
       isNoise: isNoise ?? this.isNoise,
+      sourceLangCode: sourceLangCode ?? this.sourceLangCode,
     );
   }
 }
@@ -80,6 +84,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
   AppLanguage _sourceLang = autoDetectLanguage; // Auto Detect by default
   AppLanguage _targetLang = supportedLanguages[0]; // English default
   AppLanguage? _detectedCameraLang;
+  List<AppLanguage> _detectedLanguages = [];
 
   Uint8List? _imageBytes;
   ui.Image? _decodedImage;
@@ -109,6 +114,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         boundingBox: const Rect.fromLTWH(36, 90, 290, 36),
         backgroundColor: const Color(0xFFF1F5F9),
         textColor: const Color(0xFF0F172A),
+        sourceLangCode: 'fr',
       ),
       OcrTranslatedItem(
         id: '2',
@@ -117,6 +123,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         boundingBox: const Rect.fromLTWH(36, 145, 260, 34),
         backgroundColor: const Color(0xFFF1F5F9),
         textColor: const Color(0xFF0F172A),
+        sourceLangCode: 'fr',
       ),
       OcrTranslatedItem(
         id: '3',
@@ -125,6 +132,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         boundingBox: const Rect.fromLTWH(36, 185, 310, 32),
         backgroundColor: const Color(0xFFF1F5F9),
         textColor: const Color(0xFF0F172A),
+        sourceLangCode: 'fr',
       ),
       OcrTranslatedItem(
         id: '4',
@@ -133,6 +141,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         boundingBox: const Rect.fromLTWH(36, 240, 305, 34),
         backgroundColor: const Color(0xFFF1F5F9),
         textColor: const Color(0xFF0F172A),
+        sourceLangCode: 'fr',
       ),
       OcrTranslatedItem(
         id: '5',
@@ -141,12 +150,18 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         boundingBox: const Rect.fromLTWH(36, 295, 325, 34),
         backgroundColor: const Color(0xFFF1F5F9),
         textColor: const Color(0xFF0F172A),
+        sourceLangCode: 'fr',
       ),
     ];
 
     setState(() {
       _lensLineItems = sampleItems;
       _mergedItems = sampleItems;
+      final frLang = getLanguageByCode('fr');
+      if (frLang != null) {
+        _detectedLanguages = [frLang];
+        _detectedCameraLang = frLang;
+      }
     });
   }
 
@@ -242,13 +257,14 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
 
     if (image == null) return;
 
-    // Reset old overlays and detected language immediately so previous image data is never stuck
+    // Reset old overlays and detected languages immediately so previous image data is never stuck
     setState(() {
       _isProcessing = true;
       _lensLineItems.clear();
       _mergedItems.clear();
       if (_sourceLang.isAuto) {
         _detectedCameraLang = null;
+        _detectedLanguages.clear();
       }
     });
 
@@ -333,16 +349,10 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         return;
       }
 
-      // 2. Merged Paragraph Blocks (for alternative mode)
-      final List<({
-        String id,
-        String text,
-        Rect box,
-        Color bgColor,
-        Color fgColor,
-      })> candidateBlocks = [];
+      // Sort candidate lines vertically (top to bottom) for stable spatial grouping
+      candidateLines.sort((a, b) => a.box.top.compareTo(b.box.top));
 
-      // Group candidate lines that are vertically adjacent
+      // 2. Group candidate lines into cohesive visual clusters (signs / paragraphs)
       final List<List<({String id, String text, Rect box, Color bgColor, Color fgColor})>> clusters = [];
       for (final item in candidateLines) {
         bool added = false;
@@ -361,122 +371,158 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         }
       }
 
-      int blockCounter = 0;
-      for (final cluster in clusters) {
-        blockCounter++;
-        double minL = double.infinity, minT = double.infinity;
-        double maxR = -double.infinity, maxB = -double.infinity;
-        final words = <String>[];
-
-        for (final it in cluster) {
-          words.add(it.text);
-          if (it.box.left < minL) minL = it.box.left;
-          if (it.box.top < minT) minT = it.box.top;
-          if (it.box.right > maxR) maxR = it.box.right;
-          if (it.box.bottom > maxB) maxB = it.box.bottom;
-        }
-
-        final blockRect = Rect.fromLTRB(minL, minT, maxR, maxB);
-        final Color blockBg = _sampleBackgroundColor(uiImage, rawRgba, blockRect);
-        final Color blockFg = _getTextColorForBackground(blockBg);
-
-        candidateBlocks.add((
-          id: 'block_$blockCounter',
-          text: words.join('\n'),
-          box: blockRect,
-          bgColor: blockBg,
-          fgColor: blockFg,
-        ));
-      }
-
-      // 3. Detect language if source is Auto Detect
-      if (_sourceLang.isAuto && candidateLines.isNotEmpty) {
-        final sampleText = candidateLines.take(5).map((l) => l.text).join(' ');
-        final detectedCode = await TranslationService.instance.identifyLanguage(sampleText);
-        if (detectedCode != null) {
-          final resolved = getLanguageByCode(detectedCode);
-          if (resolved != null) {
-            _detectedCameraLang = resolved;
-          }
-        }
-      }
-      final effectiveFromCode = _detectedCameraLang?.code ?? (_sourceLang.isAuto ? 'auto' : _sourceLang.code);
-
-      // 4. Translate Exact Lines in parallel batches of 10
+      // 3. Translate clusters independently so each sign/cluster detects and preserves its actual language
       final List<OcrTranslatedItem> tempLensLines = [];
-      const batchSize = 10;
-      for (var i = 0; i < candidateLines.length; i += batchSize) {
-        final end = (i + batchSize < candidateLines.length) ? i + batchSize : candidateLines.length;
-        final batch = candidateLines.sublist(i, end);
+      final List<OcrTranslatedItem> tempBlocks = [];
+      final Set<String> detectedCodes = {};
 
-        final results = await Future.wait(
-          batch.map((item) async {
-            try {
-              final translated = await TranslationService.instance.translate(
-                text: item.text,
-                fromCode: effectiveFromCode,
-                toCode: _targetLang.code,
-                mode: 'camera',
-              );
-              return OcrTranslatedItem(
-                id: item.id,
-                originalText: item.text,
-                translatedText: translated.isNotEmpty ? translated : item.text,
-                boundingBox: item.box,
-                backgroundColor: item.bgColor,
-                textColor: item.fgColor,
-              );
-            } catch (_) {
-              return OcrTranslatedItem(
-                id: item.id,
-                originalText: item.text,
-                translatedText: item.text,
-                boundingBox: item.box,
-                backgroundColor: item.bgColor,
-                textColor: item.fgColor,
-              );
+      int blockCounter = 0;
+      final clusterResults = await Future.wait(
+        clusters.map((cluster) async {
+          blockCounter++;
+          double minL = double.infinity, minT = double.infinity;
+          double maxR = -double.infinity, maxB = -double.infinity;
+          for (final it in cluster) {
+            if (it.box.left < minL) minL = it.box.left;
+            if (it.box.top < minT) minT = it.box.top;
+            if (it.box.right > maxR) maxR = it.box.right;
+            if (it.box.bottom > maxB) maxB = it.box.bottom;
+          }
+
+          final blockRect = Rect.fromLTRB(minL, minT, maxR, maxB);
+          final Color blockBg = _sampleBackgroundColor(uiImage, rawRgba, blockRect);
+          final Color blockFg = _getTextColorForBackground(blockBg);
+
+          final clusterText = cluster.map((it) => it.text).join('\n');
+          final clusterFromCode = _sourceLang.isAuto ? 'auto' : _sourceLang.code;
+
+          try {
+            final res = await TranslationService.instance.translateWithDetection(
+              text: clusterText,
+              fromCode: clusterFromCode,
+              toCode: _targetLang.code,
+              mode: 'camera',
+            );
+
+            final String detected = res.detectedSource.toLowerCase();
+            final String translatedCluster = res.text.isNotEmpty ? res.text : clusterText;
+            final translatedLines = translatedCluster.split('\n');
+            final List<OcrTranslatedItem> clusterLensItems = [];
+
+            if (translatedLines.length == cluster.length) {
+              for (int i = 0; i < cluster.length; i++) {
+                final it = cluster[i];
+                final tLine = translatedLines[i].trim();
+                clusterLensItems.add(
+                  OcrTranslatedItem(
+                    id: it.id,
+                    originalText: it.text,
+                    translatedText: tLine.isNotEmpty ? tLine : it.text,
+                    boundingBox: it.box,
+                    backgroundColor: it.bgColor,
+                    textColor: it.fgColor,
+                    sourceLangCode: detected,
+                  ),
+                );
+              }
+            } else {
+              // Fallback: translate lines individually using the cluster's detected language
+              for (int i = 0; i < cluster.length; i++) {
+                final it = cluster[i];
+                String lineTrans = (i < translatedLines.length && translatedLines[i].trim().isNotEmpty)
+                    ? translatedLines[i].trim()
+                    : '';
+                if (lineTrans.isEmpty) {
+                  try {
+                    final r = await TranslationService.instance.translate(
+                      text: it.text,
+                      fromCode: detected,
+                      toCode: _targetLang.code,
+                      mode: 'camera',
+                    );
+                    lineTrans = r.isNotEmpty ? r : it.text;
+                  } catch (_) {
+                    lineTrans = it.text;
+                  }
+                }
+                clusterLensItems.add(
+                  OcrTranslatedItem(
+                    id: it.id,
+                    originalText: it.text,
+                    translatedText: lineTrans,
+                    boundingBox: it.box,
+                    backgroundColor: it.bgColor,
+                    textColor: it.fgColor,
+                    sourceLangCode: detected,
+                  ),
+                );
+              }
             }
-          }),
-        );
-        tempLensLines.addAll(results);
+
+            final blockItem = OcrTranslatedItem(
+              id: 'block_$blockCounter',
+              originalText: clusterText,
+              translatedText: translatedCluster,
+              boundingBox: blockRect,
+              backgroundColor: blockBg,
+              textColor: blockFg,
+              sourceLangCode: detected,
+            );
+
+            return (
+              lensItems: clusterLensItems,
+              blockItem: blockItem,
+              detectedCode: detected,
+            );
+          } catch (e) {
+            debugPrint('Cluster translation error: $e');
+            final List<OcrTranslatedItem> fallbackLens = cluster.map((it) {
+              return OcrTranslatedItem(
+                id: it.id,
+                originalText: it.text,
+                translatedText: it.text,
+                boundingBox: it.box,
+                backgroundColor: it.bgColor,
+                textColor: it.fgColor,
+                sourceLangCode: _sourceLang.code,
+              );
+            }).toList();
+
+            final blockItem = OcrTranslatedItem(
+              id: 'block_$blockCounter',
+              originalText: clusterText,
+              translatedText: clusterText,
+              boundingBox: blockRect,
+              backgroundColor: blockBg,
+              textColor: blockFg,
+              sourceLangCode: _sourceLang.code,
+            );
+
+            return (
+              lensItems: fallbackLens,
+              blockItem: blockItem,
+              detectedCode: _sourceLang.code,
+            );
+          }
+        }),
+      );
+
+      for (final cr in clusterResults) {
+        tempLensLines.addAll(cr.lensItems);
+        tempBlocks.add(cr.blockItem);
+        if (cr.detectedCode.isNotEmpty &&
+            cr.detectedCode != 'und' &&
+            cr.detectedCode != 'auto') {
+          detectedCodes.add(cr.detectedCode);
+        }
       }
 
-      // 5. Translate Merged Blocks for alternative mode
-      final List<OcrTranslatedItem> tempBlocks = [];
-      for (var i = 0; i < candidateBlocks.length; i += batchSize) {
-        final end = (i + batchSize < candidateBlocks.length) ? i + batchSize : candidateBlocks.length;
-        final batch = candidateBlocks.sublist(i, end);
-
-        final results = await Future.wait(
-          batch.map((item) async {
-            try {
-              final translated = await TranslationService.instance.translate(
-                text: item.text,
-                fromCode: effectiveFromCode,
-                toCode: _targetLang.code,
-                mode: 'camera',
-              );
-              return OcrTranslatedItem(
-                id: item.id,
-                originalText: item.text,
-                translatedText: translated.isNotEmpty ? translated : item.text,
-                boundingBox: item.box,
-                backgroundColor: item.bgColor,
-                textColor: item.fgColor,
-              );
-            } catch (_) {
-              return OcrTranslatedItem(
-                id: item.id,
-                originalText: item.text,
-                translatedText: item.text,
-                boundingBox: item.box,
-                backgroundColor: item.bgColor,
-                textColor: item.fgColor,
-              );
-            }
-          }),
-        );
-        tempBlocks.addAll(results);
+      final List<AppLanguage> detectedLangs = [];
+      for (final code in detectedCodes) {
+        final lang = getLanguageByCode(code);
+        if (lang != null && !detectedLangs.contains(lang)) {
+          detectedLangs.add(lang);
+        }
       }
 
       if (!mounted) return;
@@ -485,6 +531,8 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         _decodedImage = uiImage;
         _lensLineItems = tempLensLines;
         _mergedItems = tempBlocks;
+        _detectedLanguages = detectedLangs;
+        _detectedCameraLang = detectedLangs.isNotEmpty ? detectedLangs.first : null;
         _isProcessing = false;
       });
     } catch (e) {
@@ -523,20 +571,18 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
 
         final results = await Future.wait(
           batch.map((item) async {
+            final fromCode = _sourceLang.isAuto
+                ? (item.sourceLangCode ?? effectiveFromCode)
+                : _sourceLang.code;
             try {
               final translated = await TranslationService.instance.translate(
                 text: item.originalText,
-                fromCode: effectiveFromCode,
+                fromCode: fromCode,
                 toCode: _targetLang.code,
                 mode: 'camera',
               );
-              return OcrTranslatedItem(
-                id: item.id,
-                originalText: item.originalText,
+              return item.copyWith(
                 translatedText: translated.isNotEmpty ? translated : item.originalText,
-                boundingBox: item.boundingBox,
-                backgroundColor: item.backgroundColor,
-                textColor: item.textColor,
               );
             } catch (_) {
               return item;
@@ -554,20 +600,18 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
 
         final results = await Future.wait(
           batch.map((item) async {
+            final fromCode = _sourceLang.isAuto
+                ? (item.sourceLangCode ?? effectiveFromCode)
+                : _sourceLang.code;
             try {
               final translated = await TranslationService.instance.translate(
                 text: item.originalText,
-                fromCode: effectiveFromCode,
+                fromCode: fromCode,
                 toCode: _targetLang.code,
                 mode: 'camera',
               );
-              return OcrTranslatedItem(
-                id: item.id,
-                originalText: item.originalText,
+              return item.copyWith(
                 translatedText: translated.isNotEmpty ? translated : item.originalText,
-                boundingBox: item.boundingBox,
-                backgroundColor: item.backgroundColor,
-                textColor: item.textColor,
               );
             } catch (_) {
               return item;
@@ -617,6 +661,9 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       builder: (ctx) {
+        final itemLang = item.sourceLangCode != null
+            ? (getLanguageByCode(item.sourceLangCode!) ?? _sourceLang)
+            : (_detectedCameraLang ?? _sourceLang);
         return Container(
           decoration: const BoxDecoration(
             color: Colors.white,
@@ -690,10 +737,10 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
                     children: [
                       Row(
                         children: [
-                          Text(_sourceLang.flag, style: const TextStyle(fontSize: 16)),
+                          Text(itemLang.flag, style: const TextStyle(fontSize: 16)),
                           const SizedBox(width: 8),
                           Text(
-                            _sourceLang.name,
+                            itemLang.name,
                             style: const TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
@@ -808,6 +855,16 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
     );
   }
 
+  String _getDetectedBadgeLabel() {
+    if (_detectedLanguages.length > 1) {
+      final names = _detectedLanguages.map((l) => '${l.name} ${l.flag}').join(' & ');
+      return 'Multi-Language: $names';
+    } else if (_detectedCameraLang != null) {
+      return 'Detected: ${_detectedCameraLang!.name} ${_detectedCameraLang!.flag}';
+    }
+    return '';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -834,6 +891,9 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
                       if (_detectedCameraLang != null) {
                         _sourceLang = _targetLang;
                         _targetLang = _detectedCameraLang!;
+                      } else if (_detectedLanguages.isNotEmpty) {
+                        _sourceLang = _targetLang;
+                        _targetLang = _detectedLanguages.first;
                       } else {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(content: Text('Target language cannot be Auto Detect')),
@@ -851,7 +911,10 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
                 onSourceChanged: (l) {
                   setState(() {
                     _sourceLang = l;
-                    if (!l.isAuto) _detectedCameraLang = null;
+                    if (!l.isAuto) {
+                      _detectedCameraLang = null;
+                      _detectedLanguages.clear();
+                    }
                   });
                   _retranslateCurrentItems();
                 },
@@ -860,7 +923,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
                   _retranslateCurrentItems();
                 },
               ),
-              if (_sourceLang.isAuto && _detectedCameraLang != null) ...[
+              if (_sourceLang.isAuto && (_detectedLanguages.isNotEmpty || _detectedCameraLang != null)) ...[
                 const SizedBox(height: 6),
                 Center(
                   child: Container(
@@ -876,7 +939,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
                         const Icon(CupertinoIcons.sparkles, size: 13, color: AppColors.primary),
                         const SizedBox(width: 5),
                         Text(
-                          'Detected: ${_detectedCameraLang!.name} ${_detectedCameraLang!.flag}',
+                          _getDetectedBadgeLabel(),
                           style: const TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.bold,
@@ -1484,6 +1547,9 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
                     separatorBuilder: (_, __) => const SizedBox(height: 10),
                     itemBuilder: (context, index) {
                       final item = items[index];
+                      final itemSourceLang = item.sourceLangCode != null
+                          ? (getLanguageByCode(item.sourceLangCode!) ?? _sourceLang)
+                          : (_detectedCameraLang ?? _sourceLang);
                       return Container(
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
@@ -1504,7 +1570,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
                             Row(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(_sourceLang.flag, style: const TextStyle(fontSize: 14)),
+                                Text(itemSourceLang.flag, style: const TextStyle(fontSize: 14)),
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Text(
