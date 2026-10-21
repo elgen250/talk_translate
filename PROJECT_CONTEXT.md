@@ -32,6 +32,7 @@
 | `share_plus` | `^10.1.2` | Main | Native OS share sheet integration for sharing translated text and images |
 | `google_mlkit_translation` | `any` | Main | On-device Google ML Kit neural language translation models |
 | `google_mlkit_text_recognition` | `any` | Main | Camera OCR text recognition and bounding box extraction |
+| `google_mlkit_language_id` | `any` | Main | On-device Google ML Kit neural language identification (Auto-Detect) |
 | `image_picker` | `any` | Main | Camera photo capture and photo library image selection |
 | `sherpa_onnx` | `^1.13.8` | Main | Local on-device Whisper Tiny ONNX runtime speech-to-text |
 | `record` | `^7.1.2` | Main | High-fidelity PCM/WAV microphone recording for offline speech recognition |
@@ -124,11 +125,13 @@ talk_translate/
 ---
 
 ### `lib/core/models/app_language.dart`
-- **Role:** Data structures and mapping utilities for supported languages.
+- **Role:** Data structures and mapping utilities for supported languages and language auto-detection.
 - **Classes / Models:**
-  - `AppLanguage`: Immutable model holding `name` (String), `flag` (String emoji), `code` (ISO 639-1 code), and `speechCode` (BCP-47 speech locale tag).
+  - `AppLanguage`: Immutable model holding `name`, `flag`, `code`, `speechCode`, and `isAuto` getter.
 - **Constants & Functions:**
+  - `const AppLanguage autoDetectLanguage`: Built-in auto-detect language definition (`code: 'auto'`).
   - `const List<AppLanguage> supportedLanguages`: 11 pre-configured languages (English, Spanish, French, German, Italian, Portuguese, Japanese, Korean, Chinese Simplified, Chinese Traditional, Arabic).
+  - `AppLanguage? getLanguageByCode(String code)`: Resolves an `AppLanguage` instance by its 2-letter ISO or speech locale code.
   - `TranslateLanguage getMlKitLanguage(String code)`: Maps two-letter language code to `google_mlkit_translation`'s `TranslateLanguage` enum.
 - **Dependencies:** `package:google_mlkit_translation`.
 - **Used By:** `language_selector_row.dart`, `translation_service.dart`, `talk_translate_view.dart`, `text_translate_view.dart`, `camera_translate_view.dart`.
@@ -163,13 +166,13 @@ talk_translate/
 ---
 
 ### `lib/core/widgets/language_selector_row.dart`
-- **Role:** Reusable language selection toolbar with animated swap functionality.
+- **Role:** Reusable language selection toolbar with animated swap functionality and Auto Detect support.
 - **Classes / Widgets:**
-  - `LanguageSelectorRow` (`StatelessWidget`): Renders side-by-side dropdown buttons displaying language flags, localized names, and a circular swap action button.
+  - `LanguageSelectorRow` (`StatelessWidget`): Renders side-by-side dropdown buttons displaying language flags, localized names, circular swap action button, and optional Auto Detect AI badge when `allowAutoDetect: true`.
 - **Key Methods:**
-  - `Widget _buildDropdown(AppLanguage current, ValueChanged<AppLanguage> onChanged)`: Dropdown container bound to `supportedLanguages`.
+  - `Widget _buildDropdown(...)`: Dropdown container supporting `autoDetectLanguage` option on the source selector.
 - **Dependencies:** `lib/core/models/app_language.dart`, `lib/core/theme/app_colors.dart`, `lib/core/widgets/card_decoration.dart`.
-- **Used By:** `talk_translate_view.dart`, `text_translate_view.dart`, `camera_translate_view.dart`.
+- **Used By:** `talk_translate_view.dart`, `text_translate_view.dart`, `camera_translate_view.dart`, `camera_solutions_compare_view.dart`.
 
 ---
 
@@ -234,15 +237,17 @@ talk_translate/
 - **Role:** Unified central facade orchestrating all translation, OCR, STT, and TTS operations across the entire app.
 - **Classes:**
   - `TranslationService` (Singleton):
-    - Coordinates Cloud Translation, Google ML Kit on-device translation, `AppDatabase.lookupOffline`, Camera OCR text recognition, Speech-To-Text sessions, and TTS audio synthesis.
+    - Coordinates Cloud Translation, Google ML Kit on-device translation, `AppDatabase.lookupOffline`, Camera OCR text recognition, on-device language identification, Speech-To-Text sessions, and TTS audio synthesis.
 - **Key Methods:**
+  - `Future<String?> identifyLanguage(String text)`: Neural language detection via `google_mlkit_language_id` with regex script heuristics and cloud fallback.
+  - `Future<({String text, String detectedSource})> translateWithDetection(...)`: Translates text with automatic source language detection when `fromCode == 'auto'`.
+  - `Future<String> translate({required String text, required String fromCode, required String toCode, String mode})`: Hybrid routing: Cloud translation ➔ Google ML Kit on-device neural model ➔ built-in offline dictionary.
   - `Future<Map<String, dynamic>?> captureAndRecognizeBlocks({bool fromCamera = true})`: Captures photo and extracts text blocks with bounding boxes via `TextRecognizer`.
   - `Future<bool> hasInternetConnection()`: Fast socket DNS probe to `google.com` (1200ms timeout).
-  - `Future<String> translate({required String text, required String fromCode, required String toCode, String mode})`: Hybrid routing: attempts Cloud translation, falls back to Google ML Kit on-device model, then built-in offline dictionary.
   - `Future<void> speak(String text, String speechCode)`: Prioritizes `NeuralTtsService` studio voices; gracefully falls back to native `FlutterTts`.
   - `Future<bool> initSpeech({Function(dynamic)? onError, Function(String)? onStatus})`: Initializes native platform SpeechToText.
   - `Future<bool> isAiModelDownloaded(String langCode)` / `downloadAiModel(String langCode)` / `deleteAiModel(String langCode)`: Manages on-device ML Kit language model packs.
-- **Dependencies:** `package:google_mlkit_translation`, `package:google_mlkit_text_recognition`, `package:translator`, `package:flutter_tts`, `package:speech_to_text`, `package:image_picker`, `lib/data/neural_tts_service.dart`, `lib/data/app_database.dart`, `lib/core/models/app_language.dart`.
+- **Dependencies:** `package:google_mlkit_translation`, `package:google_mlkit_text_recognition`, `package:google_mlkit_language_id`, `package:translator`, `package:flutter_tts`, `package:speech_to_text`, `package:image_picker`, `lib/data/neural_tts_service.dart`, `lib/data/app_database.dart`, `lib/core/models/app_language.dart`.
 - **Used By:** All primary features (`talk_translate_view`, `text_translate_view`, `camera_translate_view`, `keyboard_translator_screen`, `history_screen`, `offline_mode_screen`).
 
 ---
@@ -258,16 +263,17 @@ talk_translate/
 ---
 
 ### `lib/features/talk_translate/talk_translate_view.dart`
-- **Role:** Real-time voice translation interface with continuous non-stop speech recognition, live translation streaming, auto-scrolling, and Split DUAL face-to-face mode.
+- **Role:** Real-time voice translation interface with continuous non-stop speech recognition, live translation streaming, auto-scrolling, bilingual auto-detection, and Split DUAL face-to-face mode.
 - **Classes / Widgets:**
   - `TalkTranslateView` (`StatefulWidget`):
-    - Manages live speech input, Wi-Fi vs Local AI auto-detection, continuous restart loop for infinite dictation, and smooth auto-scrolling containers.
+    - Manages live speech input, Wi-Fi vs Local AI auto-detection, continuous restart loop for infinite dictation, auto-scrolling containers, and bilingual automatic language identification (`_detectedTalkLang`).
 - **Key State Variables & Methods:**
+  - `_detectedTalkLang`: Active detected language during auto-detect listening sessions.
   - `_spokenScrollController`, `_translatedScrollController`, `_speakerTwoSpokenScrollController`, `_speakerTwoTranslatedScrollController`: Controls auto-scrolling of lengthy dictations.
   - `void _scrollToBottom(ScrollController controller)`: Smoothly animates text containers to newest recognized words.
   - `Future<bool> _startContinuousOnlineListen({required bool speakerTwo})`: Initiates platform STT session with custom restart timer and word segment accumulation (`_commitCurrentSessionWords`).
   - `void _scheduleContinuousRestart(...)`: Forcefully restarts speech recognition on silence or buffer end to allow hours of continuous speaking without manual restarts.
-  - `void _liveTranslate(...)`: 180ms debounced live streaming translation during speech.
+  - `void _liveTranslate(...)`: 180ms debounced live streaming translation during speech with bilingual auto-flip when speaking the target language.
   - `Widget _buildSplitConversationScreen()`: 180° inverted dual-screen UI for two people seated across a table.
 - **Dependencies:** `package:speech_to_text`, `lib/data/translation_service.dart`, `lib/data/offline_voice_service.dart`, `lib/data/app_database.dart`, `lib/core/widgets/shared_top_bar.dart`, `lib/core/widgets/language_selector_row.dart`.
 - **Used By:** `main_navigation_screen.dart`.
@@ -414,9 +420,9 @@ talk_translate/
 ---
 
 ## 7. Latest Sync Changelog
-1. **2026-10-20:** Implemented true Google Lens AR 1:1 in-place text replacement in `camera_solutions_compare_view.dart`: exact coordinate alignment over original text, pixel-level surface background color sampling to erase old text, font sizing directly proportional to line height (`height * 0.78`), and zero-shadow seamless surface blending.
-2. **2026-10-20:** Created `camera_solutions_compare_view.dart` implementing multi-solution OCR comparison (Google Lens AR, Interactive Focus & Bottom Sheet, Document Reader List, and Merged Paragraphs) with dedicated toggle buttons for live real-device testing.
-3. **2026-10-20:** Optimized camera OCR translation loop to execute in asynchronous parallel batches (`Future.wait`) of 10 lines, preventing UI thread stalls and network timeouts during large document scans.
-4. **2026-10-20:** Upgraded `camera_translate_view.dart` to a professional Google Lens-style OCR engine with line-level extraction (`TextLine`), aspect-ratio bounding box alignment via `ui.decodeImageFromList`, `InteractiveViewer` zoom, and tap-to-speak.
-5. **2026-10-20:** Created `PROJECT_CONTEXT.md` as the unified codebase source of truth and architectural index.
+1. **2026-10-21:** Integrated on-device neural language identification (`google_mlkit_language_id`) and bilingual auto-detection across Camera OCR and Talk Voice views, adding `autoDetectLanguage` option (`🌐 Auto Detect`) to `LanguageSelectorRow`, real-time speech language detection, and automatic translation routing.
+2. **2026-10-20:** Implemented true Google Lens AR 1:1 in-place text replacement in `camera_solutions_compare_view.dart`: exact coordinate alignment over original text, pixel-level surface background color sampling to erase old text, font sizing directly proportional to line height (`height * 0.78`), and zero-shadow seamless surface blending.
+3. **2026-10-20:** Created `camera_solutions_compare_view.dart` implementing multi-solution OCR comparison (Google Lens AR, Interactive Focus & Bottom Sheet, Document Reader List, and Merged Paragraphs) with dedicated toggle buttons for live real-device testing.
+4. **2026-10-20:** Optimized camera OCR translation loop to execute in asynchronous parallel batches (`Future.wait`) of 10 lines, preventing UI thread stalls and network timeouts during large document scans.
+5. **2026-10-20:** Upgraded `camera_translate_view.dart` to a professional Google Lens-style OCR engine with line-level extraction (`TextLine`), aspect-ratio bounding box alignment via `ui.decodeImageFromList`, `InteractiveViewer` zoom, and tap-to-speak.
 

@@ -12,7 +12,26 @@ class AppLanguage {
     required this.code,
     required this.speechCode,
   });
+
+  bool get isAuto => code == 'auto';
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AppLanguage &&
+          runtimeType == other.runtimeType &&
+          code == other.code;
+
+  @override
+  int get hashCode => code.hashCode;
 }
+
+const AppLanguage autoDetectLanguage = AppLanguage(
+  name: 'Detect Language',
+  flag: '🌐',
+  code: 'auto',
+  speechCode: 'auto',
+);
 
 const List<AppLanguage> supportedLanguages = [
   AppLanguage(name: 'English', flag: '🇺🇸', code: 'en', speechCode: 'en-US'),
@@ -40,6 +59,20 @@ const List<AppLanguage> supportedLanguages = [
   AppLanguage(name: 'Arabic', flag: '🇪🇬', code: 'ar', speechCode: 'ar-EG'),
 ];
 
+/// Resolves an [AppLanguage] by its 2-letter ISO code or speech locale code
+AppLanguage? getLanguageByCode(String code) {
+  final clean = code.toLowerCase().trim();
+  if (clean == 'auto') return autoDetectLanguage;
+  for (final lang in supportedLanguages) {
+    if (lang.code.toLowerCase() == clean ||
+        clean.startsWith(lang.code.toLowerCase()) ||
+        lang.speechCode.toLowerCase().startsWith(clean)) {
+      return lang;
+    }
+  }
+  return null;
+}
+
 TranslateLanguage getMlKitLanguage(String code) {
   switch (code.toLowerCase()) {
     case 'ar':
@@ -66,4 +99,3 @@ TranslateLanguage getMlKitLanguage(String code) {
       return TranslateLanguage.english;
   }
 }
-

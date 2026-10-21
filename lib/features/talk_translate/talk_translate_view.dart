@@ -25,6 +25,7 @@ class TalkTranslateView extends StatefulWidget {
 class _TalkTranslateViewState extends State<TalkTranslateView> {
   AppLanguage _sourceLang = supportedLanguages[0]; // English
   AppLanguage _targetLang = supportedLanguages[10]; // Arabic
+  AppLanguage? _detectedTalkLang;
   String _spokenText = '';
   String _translatedText = '';
   bool _isListening = false;
@@ -113,9 +114,21 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
   void _swapLanguages() {
     _liveDebounceTimer?.cancel();
     setState(() {
-      final temp = _sourceLang;
-      _sourceLang = _targetLang;
-      _targetLang = temp;
+      if (_sourceLang.isAuto) {
+        if (_detectedTalkLang != null) {
+          _sourceLang = _targetLang;
+          _targetLang = _detectedTalkLang!;
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Target language cannot be Auto Detect')),
+          );
+          return;
+        }
+      } else {
+        final temp = _sourceLang;
+        _sourceLang = _targetLang;
+        _targetLang = temp;
+      }
       _spokenText = '';
       _translatedText = '';
       _accumulatedSpokenText = '';
@@ -125,7 +138,7 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
     });
   }
 
-  // ترجمة فورية ولحظية أثناء الكلام بدون انتظار إغلاق المايك (Live Streaming Translation)
+  // ترجمة فورية ولحظية أثناء الكلام مع كشف اللغة الذكي تلقائياً (Live Streaming Translation with Auto-Detect)
   void _liveTranslate(String text,
       {required bool fromSpeakerTwo, required bool isFinal}) {
     final clean = text.trim();
@@ -143,13 +156,37 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
       final from = fromSpeakerTwo ? _targetLang : _sourceLang;
       final to = fromSpeakerTwo ? _sourceLang : _targetLang;
 
+      AppLanguage effectiveFrom = from;
+      AppLanguage effectiveTo = to;
+
+      // الكشف التلقائي الذكي عن اللغة عند تفعيل خيار Auto Detect
+      if (from.isAuto) {
+        final detected = await TranslationService.instance.identifyLanguage(clean);
+        if (detected != null) {
+          final resolved = getLanguageByCode(detected);
+          if (resolved != null) {
+            if (mounted && _detectedTalkLang != resolved) {
+              setState(() => _detectedTalkLang = resolved);
+            }
+            if (resolved.code == to.code) {
+              // إذا نطق المستخدم بنفس اللغة الهدف، نقوم بعكس الترجمة تلقائياً (Bilingual Auto-Flip)
+              effectiveFrom = resolved;
+              effectiveTo = (to.code == 'en') ? supportedLanguages[10] : supportedLanguages[0];
+            } else {
+              effectiveFrom = resolved;
+              effectiveTo = to;
+            }
+          }
+        }
+      }
+
       if (mounted) setState(() => _isTranslating = true);
 
       try {
         final res = await TranslationService.instance.translate(
           text: clean,
-          fromCode: from.code,
-          toCode: to.code,
+          fromCode: effectiveFrom.code,
+          toCode: effectiveTo.code,
           mode: 'talk',
         );
 
@@ -345,6 +382,18 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
       if (available && TranslationService.instance.speech != null) {
         final activeLang = speakerTwo ? _targetLang : _sourceLang;
         String effectiveLocale = activeLang.speechCode;
+        if (activeLang.isAuto) {
+          if (_detectedTalkLang != null) {
+            effectiveLocale = _detectedTalkLang!.speechCode;
+          } else {
+            try {
+              final sys = await TranslationService.instance.speech!.systemLocale();
+              effectiveLocale = sys?.localeId ?? _targetLang.speechCode;
+            } catch (_) {
+              effectiveLocale = _targetLang.speechCode;
+            }
+          }
+        }
         try {
           final locales = await TranslationService.instance.speech!.locales();
           if (locales.isNotEmpty) {
@@ -585,6 +634,18 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
       if (available && TranslationService.instance.speech != null) {
         final activeLang = speakerTwo ? _targetLang : _sourceLang;
         String effectiveLocale = activeLang.speechCode;
+        if (activeLang.isAuto) {
+          if (_detectedTalkLang != null) {
+            effectiveLocale = _detectedTalkLang!.speechCode;
+          } else {
+            try {
+              final sys = await TranslationService.instance.speech!.systemLocale();
+              effectiveLocale = sys?.localeId ?? _targetLang.speechCode;
+            } catch (_) {
+              effectiveLocale = _targetLang.speechCode;
+            }
+          }
+        }
         try {
           final locales = await TranslationService.instance.speech!.locales();
           if (locales.isNotEmpty) {
@@ -685,8 +746,12 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
                     child: LanguageSelectorRow(
                       source: _sourceLang,
                       target: _targetLang,
+                      allowAutoDetect: true,
                       onSwap: _swapLanguages,
-                      onSourceChanged: (l) => setState(() => _sourceLang = l),
+                      onSourceChanged: (l) => setState(() {
+                        _sourceLang = l;
+                        if (!l.isAuto) _detectedTalkLang = null;
+                      }),
                       onTargetChanged: (l) => setState(() => _targetLang = l),
                     ),
                   ),
@@ -735,13 +800,42 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
                           Row(
                             children: [
                               Text(
-                                _sourceLang.name,
+                                _sourceLang.isAuto
+                                    ? (_detectedTalkLang != null
+                                        ? 'Auto (${_detectedTalkLang!.name} ${_detectedTalkLang!.flag})'
+                                        : 'Auto Detect')
+                                    : _sourceLang.name,
                                 style: const TextStyle(
                                   fontSize: 13,
                                   fontWeight: FontWeight.w600,
                                   color: AppColors.textSecondary,
                                 ),
                               ),
+                              if (_sourceLang.isAuto && _detectedTalkLang != null) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.primary.withValues(alpha: 0.12),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(CupertinoIcons.sparkles, size: 10, color: AppColors.primary),
+                                      const SizedBox(width: 3),
+                                      Text(
+                                        _detectedTalkLang!.code.toUpperCase(),
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: AppColors.primary,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
                               if (_isListening) ...[
                                 const SizedBox(width: 8),
                                 Container(

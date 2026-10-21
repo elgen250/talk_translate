@@ -78,8 +78,9 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
   // Default to pure Google Lens AR 1:1 in-place mode
   CameraSolutionMode _activeMode = CameraSolutionMode.googleLensAR;
 
-  AppLanguage _sourceLang = supportedLanguages[1]; // French default
+  AppLanguage _sourceLang = autoDetectLanguage; // Auto Detect by default
   AppLanguage _targetLang = supportedLanguages[0]; // English default
+  AppLanguage? _detectedCameraLang;
 
   Uint8List? _imageBytes;
   ui.Image? _decodedImage;
@@ -145,6 +146,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
     ];
 
     setState(() {
+      _detectedCameraLang = supportedLanguages[2]; // French
       _lensLineItems = sampleItems;
       _mergedItems = sampleItems;
     });
@@ -347,6 +349,19 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
           }
         }
 
+        // Detect language if source is Auto Detect
+        if (_sourceLang.isAuto && candidateLines.isNotEmpty) {
+          final sampleText = candidateLines.take(5).map((l) => l.text).join(' ');
+          final detectedCode = await TranslationService.instance.identifyLanguage(sampleText);
+          if (detectedCode != null) {
+            final resolved = getLanguageByCode(detectedCode);
+            if (resolved != null) {
+              _detectedCameraLang = resolved;
+            }
+          }
+        }
+        final effectiveFromCode = _detectedCameraLang?.code ?? (_sourceLang.isAuto ? 'auto' : _sourceLang.code);
+
         // 3. Translate Exact Lines in parallel batches of 10
         final List<OcrTranslatedItem> tempLensLines = [];
         const batchSize = 10;
@@ -359,7 +374,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
               try {
                 final translated = await TranslationService.instance.translate(
                   text: item.text,
-                  fromCode: _sourceLang.code,
+                  fromCode: effectiveFromCode,
                   toCode: _targetLang.code,
                   mode: 'camera',
                 );
@@ -397,7 +412,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
               try {
                 final translated = await TranslationService.instance.translate(
                   text: item.text,
-                  fromCode: _sourceLang.code,
+                  fromCode: effectiveFromCode,
                   toCode: _targetLang.code,
                   mode: 'camera',
                 );
@@ -711,16 +726,59 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
               LanguageSelectorRow(
                 source: _sourceLang,
                 target: _targetLang,
+                allowAutoDetect: true,
                 onSwap: () {
                   setState(() {
-                    final temp = _sourceLang;
-                    _sourceLang = _targetLang;
-                    _targetLang = temp;
+                    if (_sourceLang.isAuto) {
+                      if (_detectedCameraLang != null) {
+                        _sourceLang = _targetLang;
+                        _targetLang = _detectedCameraLang!;
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Target language cannot be Auto Detect')),
+                        );
+                      }
+                    } else {
+                      final temp = _sourceLang;
+                      _sourceLang = _targetLang;
+                      _targetLang = temp;
+                    }
                   });
                 },
-                onSourceChanged: (l) => setState(() => _sourceLang = l),
+                onSourceChanged: (l) => setState(() {
+                  _sourceLang = l;
+                  if (!l.isAuto) _detectedCameraLang = null;
+                }),
                 onTargetChanged: (l) => setState(() => _targetLang = l),
               ),
+              if (_sourceLang.isAuto && _detectedCameraLang != null) ...[
+                const SizedBox(height: 6),
+                Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppColors.primary.withValues(alpha: 0.25)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(CupertinoIcons.sparkles, size: 13, color: AppColors.primary),
+                        const SizedBox(width: 5),
+                        Text(
+                          'Detected: ${_detectedCameraLang!.name} ${_detectedCameraLang!.flag}',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 10),
 
               _buildSolutionsControlBar(),

@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:google_mlkit_translation/google_mlkit_translation.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:google_mlkit_language_id/google_mlkit_language_id.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:translator/translator.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -157,50 +158,111 @@ class TranslationService {
     }
   }
 
-  Future<String> translate({
+  /// التعرف التلقائي الذكي على لغة النص باستخدام Google ML Kit Language Identification
+  /// مع دعم فحص الأبجدية والاحتياط السحابي (On-Device & Cloud Hybrid)
+  Future<String?> identifyLanguage(String text) async {
+    final clean = text.trim();
+    if (clean.isEmpty) return null;
+
+    // 1. استخدام الذكاء الاصطناعي العصبي المحلي On-Device
+    if (!kIsWeb) {
+      try {
+        final identifier = LanguageIdentifier(confidenceThreshold: 0.35);
+        final detected = await identifier.identifyLanguage(clean);
+        await identifier.close();
+        if (detected.isNotEmpty && detected != 'und') {
+          return detected.toLowerCase();
+        }
+      } catch (e) {
+        debugPrint('ML Kit Language Identification error: $e');
+      }
+    }
+
+    // 2. الكشف السريع عبر الأبجديات (Unicode Script Heuristics)
+    if (RegExp(r'[\u0600-\u06FF]').hasMatch(clean)) return 'ar';
+    if (RegExp(r'[\u4E00-\u9FFF]').hasMatch(clean)) return 'zh-cn';
+    if (RegExp(r'[\u3040-\u30FF]').hasMatch(clean)) return 'ja';
+    if (RegExp(r'[\uAC00-\uD7AF]').hasMatch(clean)) return 'ko';
+
+    // 3. الاحتياط السحابي عبر محرك الترجمة عند توفر الإنترنت
+    try {
+      final res = await _translator
+          .translate(clean, from: 'auto', to: 'en')
+          .timeout(const Duration(milliseconds: 2500));
+      final code = res.sourceLanguage.code.toLowerCase();
+      if (code.isNotEmpty && code != 'und') return code;
+    } catch (_) {}
+
+    return null;
+  }
+
+  Future<({String text, String detectedSource})> translateWithDetection({
     required String text,
     required String fromCode,
     required String toCode,
     String mode = 'text',
   }) async {
     final cleanText = text.trim();
-    if (cleanText.isEmpty) return '';
-    if (fromCode.toLowerCase() == toCode.toLowerCase()) return cleanText;
+    if (cleanText.isEmpty) {
+      return (text: '', detectedSource: fromCode);
+    }
+
+    String effectiveFromCode = fromCode.toLowerCase();
+    String detectedSource = fromCode;
+
+    // معالجة خيار Auto Detect التلقائي
+    if (effectiveFromCode == 'auto') {
+      final detected = await identifyLanguage(cleanText);
+      if (detected != null && detected.isNotEmpty) {
+        effectiveFromCode = detected;
+        detectedSource = detected;
+      } else {
+        effectiveFromCode = 'en';
+        detectedSource = 'en';
+      }
+    }
+
+    if (effectiveFromCode == toCode.toLowerCase()) {
+      return (text: cleanText, detectedSource: detectedSource);
+    }
 
     final forceOffline = AppDatabase.instance.forceOfflineMode;
     final bool isOnline = !forceOffline && await hasInternetConnection();
 
-    // 1. إذا توفر الإنترنت (Wi-Fi أو Mobile Data) ولم يتم تفعيل Force Offline Mode يدوياً،
-    // نستخدم الترجمة السحابية الفورية المتطورة والذكية تلقائياً
+    // 1. إذا توفر الإنترنت نستخدم الترجمة السحابية الذكية
     if (isOnline) {
       try {
         final res = await _translator
-            .translate(cleanText, from: fromCode, to: toCode)
+            .translate(cleanText, from: fromCode == 'auto' ? 'auto' : effectiveFromCode, to: toCode)
             .timeout(const Duration(milliseconds: 3200));
 
         if (res.text.isNotEmpty) {
+          final actualSource = (res.sourceLanguage.code.isNotEmpty && res.sourceLanguage.code != 'und')
+              ? res.sourceLanguage.code
+              : effectiveFromCode;
+
           AppDatabase.instance.saveRecord(
             TranslationRecord(
               id: DateTime.now().millisecondsSinceEpoch.toString(),
               sourceText: cleanText,
               translatedText: res.text,
-              fromCode: fromCode,
+              fromCode: actualSource,
               toCode: toCode,
               mode: mode,
               createdAt: DateTime.now(),
             ),
           );
-          return res.text;
+          return (text: res.text, detectedSource: actualSource);
         }
       } catch (e) {
         debugPrint('Online translation failed, falling back to local on-device: $e');
       }
     }
 
-    // 2. إذا انقطع النت أو كان في وضع الأوفلاين، نستخدم محرك الذكاء الاصطناعي العصبي المحلي (On-Device Neural AI)
+    // 2. إذا انقطع النت نستخدم محرك الذكاء الاصطناعي العصبي المحلي On-Device
     if (!kIsWeb) {
       try {
-        final sourceMl = getMlKitLanguage(fromCode);
+        final sourceMl = getMlKitLanguage(effectiveFromCode);
         final targetMl = getMlKitLanguage(toCode);
 
         final translator = _getTranslator(sourceMl, targetMl);
@@ -212,38 +274,53 @@ class TranslationService {
               id: DateTime.now().millisecondsSinceEpoch.toString(),
               sourceText: cleanText,
               translatedText: aiResult,
-              fromCode: fromCode,
+              fromCode: effectiveFromCode,
               toCode: toCode,
               mode: mode,
               createdAt: DateTime.now(),
             ),
           );
-          return aiResult;
+          return (text: aiResult, detectedSource: effectiveFromCode);
         }
       } catch (e) {
         debugPrint('On-device Neural AI fallback: $e');
       }
     }
 
-    // 3. فحص محرك الذكاء الاصطناعي المحلي المدمج (Smart Built-in Offline Engine)
+    // 3. القاموس المحلي المدمج
     final localAi =
-        AppDatabase.instance.lookupOffline(cleanText, fromCode, toCode);
+        AppDatabase.instance.lookupOffline(cleanText, effectiveFromCode, toCode);
     if (localAi != null && localAi.isNotEmpty) {
       AppDatabase.instance.saveRecord(
         TranslationRecord(
           id: DateTime.now().millisecondsSinceEpoch.toString(),
           sourceText: cleanText,
           translatedText: localAi,
-          fromCode: fromCode,
+          fromCode: effectiveFromCode,
           toCode: toCode,
           mode: mode,
           createdAt: DateTime.now(),
         ),
       );
-      return localAi;
+      return (text: localAi, detectedSource: effectiveFromCode);
     }
 
-    return localAi ?? cleanText;
+    return (text: localAi ?? cleanText, detectedSource: effectiveFromCode);
+  }
+
+  Future<String> translate({
+    required String text,
+    required String fromCode,
+    required String toCode,
+    String mode = 'text',
+  }) async {
+    final result = await translateWithDetection(
+      text: text,
+      fromCode: fromCode,
+      toCode: toCode,
+      mode: mode,
+    );
+    return result.text;
   }
 
   Future<void> speak(String text, String speechCode) async {
