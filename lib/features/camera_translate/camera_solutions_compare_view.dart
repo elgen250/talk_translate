@@ -505,6 +505,92 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
     return completer.future;
   }
 
+  /// Re-translates currently scanned items in real-time when the user switches source/target language
+  Future<void> _retranslateCurrentItems() async {
+    if (_lensLineItems.isEmpty && _mergedItems.isEmpty) return;
+
+    setState(() => _isProcessing = true);
+
+    try {
+      final effectiveFromCode = _detectedCameraLang?.code ?? (_sourceLang.isAuto ? 'auto' : _sourceLang.code);
+
+      // 1. Re-translate Exact Lens lines in parallel batches of 10
+      final List<OcrTranslatedItem> updatedLensLines = [];
+      const batchSize = 10;
+      for (var i = 0; i < _lensLineItems.length; i += batchSize) {
+        final end = (i + batchSize < _lensLineItems.length) ? i + batchSize : _lensLineItems.length;
+        final batch = _lensLineItems.sublist(i, end);
+
+        final results = await Future.wait(
+          batch.map((item) async {
+            try {
+              final translated = await TranslationService.instance.translate(
+                text: item.originalText,
+                fromCode: effectiveFromCode,
+                toCode: _targetLang.code,
+                mode: 'camera',
+              );
+              return OcrTranslatedItem(
+                id: item.id,
+                originalText: item.originalText,
+                translatedText: translated.isNotEmpty ? translated : item.originalText,
+                boundingBox: item.boundingBox,
+                backgroundColor: item.backgroundColor,
+                textColor: item.textColor,
+              );
+            } catch (_) {
+              return item;
+            }
+          }),
+        );
+        updatedLensLines.addAll(results);
+      }
+
+      // 2. Re-translate Merged blocks in parallel batches of 10
+      final List<OcrTranslatedItem> updatedBlocks = [];
+      for (var i = 0; i < _mergedItems.length; i += batchSize) {
+        final end = (i + batchSize < _mergedItems.length) ? i + batchSize : _mergedItems.length;
+        final batch = _mergedItems.sublist(i, end);
+
+        final results = await Future.wait(
+          batch.map((item) async {
+            try {
+              final translated = await TranslationService.instance.translate(
+                text: item.originalText,
+                fromCode: effectiveFromCode,
+                toCode: _targetLang.code,
+                mode: 'camera',
+              );
+              return OcrTranslatedItem(
+                id: item.id,
+                originalText: item.originalText,
+                translatedText: translated.isNotEmpty ? translated : item.originalText,
+                boundingBox: item.boundingBox,
+                backgroundColor: item.backgroundColor,
+                textColor: item.textColor,
+              );
+            } catch (_) {
+              return item;
+            }
+          }),
+        );
+        updatedBlocks.addAll(results);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _lensLineItems = updatedLensLines;
+        _mergedItems = updatedBlocks;
+        _isProcessing = false;
+      });
+    } catch (e) {
+      debugPrint('Retranslate error: $e');
+      if (mounted) {
+        setState(() => _isProcessing = false);
+      }
+    }
+  }
+
   /// High-Resolution Image Export & Share
   Future<void> _saveAndShareTranslatedImage() async {
     try {
@@ -752,6 +838,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(content: Text('Target language cannot be Auto Detect')),
                         );
+                        return;
                       }
                     } else {
                       final temp = _sourceLang;
@@ -759,12 +846,19 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
                       _targetLang = temp;
                     }
                   });
+                  _retranslateCurrentItems();
                 },
-                onSourceChanged: (l) => setState(() {
-                  _sourceLang = l;
-                  if (!l.isAuto) _detectedCameraLang = null;
-                }),
-                onTargetChanged: (l) => setState(() => _targetLang = l),
+                onSourceChanged: (l) {
+                  setState(() {
+                    _sourceLang = l;
+                    if (!l.isAuto) _detectedCameraLang = null;
+                  });
+                  _retranslateCurrentItems();
+                },
+                onTargetChanged: (l) {
+                  setState(() => _targetLang = l);
+                  _retranslateCurrentItems();
+                },
               ),
               if (_sourceLang.isAuto && _detectedCameraLang != null) ...[
                 const SizedBox(height: 6),
@@ -1174,6 +1268,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
     double height,
   ) {
     final double targetFontSize = height * 0.78;
+    final bool isRtl = RegExp(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]').hasMatch(item.translatedText);
 
     return Positioned(
       left: left - 1,
@@ -1193,7 +1288,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         child: Container(
           width: width + 2,
           height: height + 2,
-          alignment: Alignment.centerLeft,
+          alignment: isRtl ? Alignment.centerRight : Alignment.centerLeft,
           padding: const EdgeInsets.symmetric(horizontal: 1),
           decoration: BoxDecoration(
             color: item.backgroundColor,
@@ -1201,16 +1296,17 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
           ),
           child: FittedBox(
             fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
+            alignment: isRtl ? Alignment.centerRight : Alignment.centerLeft,
             child: Text(
               item.translatedText,
               maxLines: 1,
+              textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
               style: TextStyle(
                 color: item.textColor,
                 fontSize: targetFontSize,
                 fontWeight: FontWeight.w600,
                 height: 1.05,
-                letterSpacing: -0.2,
+                letterSpacing: isRtl ? 0 : -0.2,
               ),
             ),
           ),
@@ -1275,6 +1371,8 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
     double width,
     double height,
   ) {
+    final bool isRtl = RegExp(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]').hasMatch(item.translatedText);
+
     return Positioned(
       left: left,
       top: top,
@@ -1292,6 +1390,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         },
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+          alignment: isRtl ? Alignment.centerRight : Alignment.centerLeft,
           decoration: BoxDecoration(
             color: const Color(0xE60F172A),
             borderRadius: BorderRadius.circular(6),
@@ -1306,9 +1405,10 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
           ),
           child: FittedBox(
             fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
+            alignment: isRtl ? Alignment.centerRight : Alignment.centerLeft,
             child: Text(
               item.translatedText,
+              textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
               style: const TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,
