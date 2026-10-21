@@ -297,8 +297,21 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
     });
 
     try {
-      final bytes = await image.readAsBytes();
-      final uiImage = await _decodeImage(bytes);
+      final rawBytes = await image.readAsBytes();
+
+      // Normalize orientation: Decode with Skia/Impeller (which bakes EXIF orientation to upright)
+      // and re-encode to a pure upright PNG. This guarantees that ML Kit, the Flutter canvas,
+      // and pixel background sampling are in the exact same 1:1 upright coordinate system on both iOS and Android!
+      final ui.Codec codec = await ui.instantiateImageCodec(rawBytes);
+      final ui.FrameInfo frameInfo = await codec.getNextFrame();
+      final ui.Image uiImage = frameInfo.image;
+
+      final ByteData? pngByteData = await uiImage.toByteData(format: ui.ImageByteFormat.png);
+      final Uint8List normalizedBytes = pngByteData != null ? pngByteData.buffer.asUint8List() : rawBytes;
+
+      final tempDir = await getTemporaryDirectory();
+      final normalizedFile = File('${tempDir.path}/ocr_normalized_image.png');
+      await normalizedFile.writeAsBytes(normalizedBytes);
 
       // Extract raw RGBA bytes for pixel-level background color sampling
       ByteData? rawRgba;
@@ -308,17 +321,17 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         debugPrint('toByteData error: $e');
       }
 
-      // Universal Cross-Platform OCR (Mobile on-device ML Kit + Web/Desktop Cloud OCR)
+      // Universal Cross-Platform OCR on the normalized upright image
       final recognizedLines = await TranslationService.instance.recognizeLinesFromImage(
-        imageFile: image,
-        bytes: bytes,
+        imageFile: XFile(normalizedFile.path),
+        bytes: normalizedBytes,
         sourceLangCode: _sourceLang.isAuto ? null : _sourceLang.code,
       );
 
       if (recognizedLines.isEmpty) {
         if (!mounted) return;
         setState(() {
-          _imageBytes = bytes;
+          _imageBytes = normalizedBytes;
           _decodedImage = uiImage;
           _lensLineItems = [];
           _mergedItems = [];
@@ -363,7 +376,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
       if (candidateLines.isEmpty) {
         if (!mounted) return;
         setState(() {
-          _imageBytes = bytes;
+          _imageBytes = normalizedBytes;
           _decodedImage = uiImage;
           _lensLineItems = [];
           _mergedItems = [];
@@ -563,7 +576,7 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
 
       if (!mounted) return;
       setState(() {
-        _imageBytes = bytes;
+        _imageBytes = normalizedBytes;
         _decodedImage = uiImage;
         _lensLineItems = tempLensLines;
         _mergedItems = tempBlocks;
@@ -579,14 +592,6 @@ class _CameraSolutionsCompareViewState extends State<CameraSolutionsCompareView>
         SnackBar(content: Text('حدث خطأ أثناء معالجة الصورة: $e')),
       );
     }
-  }
-
-  Future<ui.Image> _decodeImage(Uint8List bytes) async {
-    final Completer<ui.Image> completer = Completer();
-    ui.decodeImageFromList(bytes, (ui.Image img) {
-      completer.complete(img);
-    });
-    return completer.future;
   }
 
   /// Re-translates currently scanned items in real-time when the user switches source/target language

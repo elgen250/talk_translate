@@ -1,12 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:ui' show Rect;
-import 'package:flutter/foundation.dart' show debugPrint, defaultTargetPlatform, kIsWeb, TargetPlatform, Uint8List;
+import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart' show ByteData, debugPrint, defaultTargetPlatform, kIsWeb, TargetPlatform, Uint8List;
 import 'package:google_mlkit_translation/google_mlkit_translation.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:google_mlkit_language_id/google_mlkit_language_id.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:translator/translator.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
@@ -18,7 +19,7 @@ import 'neural_tts_service.dart';
 
 class RecognizedLineData {
   final String text;
-  final Rect boundingBox;
+  final ui.Rect boundingBox;
 
   const RecognizedLineData({required this.text, required this.boundingBox});
 }
@@ -139,7 +140,7 @@ class TranslationService {
                       cloudLines.add(
                         RecognizedLineData(
                           text: lineText,
-                          boundingBox: Rect.fromLTRB(
+                          boundingBox: ui.Rect.fromLTRB(
                             minL.toDouble(),
                             minT.toDouble(),
                             maxR.toDouble(),
@@ -182,16 +183,31 @@ class TranslationService {
       );
       if (image == null) return null;
 
-      lastCapturedImagePath = image.path;
+      final rawBytes = await image.readAsBytes();
 
-      final bytes = await image.readAsBytes();
-      final lines = await recognizeLinesFromImage(imageFile: image, bytes: bytes);
+      // Normalize orientation to upright PNG:
+      final ui.Codec codec = await ui.instantiateImageCodec(rawBytes);
+      final ui.FrameInfo frameInfo = await codec.getNextFrame();
+      final ui.Image uiImage = frameInfo.image;
+      final ByteData? pngByteData = await uiImage.toByteData(format: ui.ImageByteFormat.png);
+      final Uint8List normalizedBytes = pngByteData != null ? pngByteData.buffer.asUint8List() : rawBytes;
+
+      final tempDir = await getTemporaryDirectory();
+      final normalizedFile = File('${tempDir.path}/ocr_normalized_image.png');
+      await normalizedFile.writeAsBytes(normalizedBytes);
+
+      lastCapturedImagePath = normalizedFile.path;
+
+      final lines = await recognizeLinesFromImage(
+        imageFile: XFile(normalizedFile.path),
+        bytes: normalizedBytes,
+      );
 
       return {
         'text': lines.map((l) => l.text).join('\n'),
         'blocks': <TextBlock>[],
         'lines': lines,
-        'imagePath': image.path,
+        'imagePath': normalizedFile.path,
       };
     } catch (e) {
       debugPrint('OCR capture/recognition error: $e');
