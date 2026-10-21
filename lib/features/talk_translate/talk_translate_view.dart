@@ -355,16 +355,22 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
         try {
           final locales = await TranslationService.instance.speech!.locales();
           if (locales.isNotEmpty) {
-            final matching = locales.where(
+            final exactMatch = locales.where(
               (l) =>
                   l.localeId.toLowerCase().replaceAll('_', '-') ==
-                      effectiveLocale.toLowerCase().replaceAll('_', '-') ||
-                  l.localeId
-                      .toLowerCase()
-                      .startsWith(activeLang.code.toLowerCase()),
+                  effectiveLocale.toLowerCase().replaceAll('_', '-'),
             );
-            if (matching.isNotEmpty) {
-              effectiveLocale = matching.first.localeId;
+            if (exactMatch.isNotEmpty) {
+              effectiveLocale = exactMatch.first.localeId;
+            } else {
+              final prefixMatch = locales.where(
+                (l) => l.localeId
+                    .toLowerCase()
+                    .startsWith(activeLang.code.toLowerCase()),
+              );
+              if (prefixMatch.isNotEmpty) {
+                effectiveLocale = prefixMatch.first.localeId;
+              }
             }
           }
         } catch (e) {
@@ -605,16 +611,22 @@ class _TalkTranslateViewState extends State<TalkTranslateView> {
         try {
           final locales = await TranslationService.instance.speech!.locales();
           if (locales.isNotEmpty) {
-            final matching = locales.where(
+            final exactMatch = locales.where(
               (l) =>
                   l.localeId.toLowerCase().replaceAll('_', '-') ==
-                      effectiveLocale.toLowerCase().replaceAll('_', '-') ||
-                  l.localeId
-                      .toLowerCase()
-                      .startsWith(activeLang.code.toLowerCase()),
+                  effectiveLocale.toLowerCase().replaceAll('_', '-'),
             );
-            if (matching.isNotEmpty) {
-              effectiveLocale = matching.first.localeId;
+            if (exactMatch.isNotEmpty) {
+              effectiveLocale = exactMatch.first.localeId;
+            } else {
+              final prefixMatch = locales.where(
+                (l) => l.localeId
+                    .toLowerCase()
+                    .startsWith(activeLang.code.toLowerCase()),
+              );
+              if (prefixMatch.isNotEmpty) {
+                effectiveLocale = prefixMatch.first.localeId;
+              }
             }
           }
         } catch (e) {
